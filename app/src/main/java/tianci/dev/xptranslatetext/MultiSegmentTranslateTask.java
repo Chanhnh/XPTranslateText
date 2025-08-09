@@ -68,36 +68,38 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
     }
 
     private String translateOnline(String text, String src, String dst) {
-        try {
-            URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json+protobuf");
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
-            conn.setDoOutput(true);
+    try {
+        URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json+protobuf");
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+        conn.setDoOutput(true);
 
-            // JSON body giống format bạn đưa
-            // [["text"],"src","tgt"],"wt_lib"
-            String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"wt_lib\"]";
+        // JSON body: [[["text"],"src","tgt"],"wt_lib"]
+        String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"wt_lib\"]";
 
-            try (OutputStreamWriter writer = new OutputStreamWriter(conn.getOutputStream(), "UTF-8")) {
-                writer.write(payload);
+        // Ghi trực tiếp ra OutputStream
+        byte[] data = payload.getBytes("UTF-8");
+        conn.getOutputStream().write(data);
+        conn.getOutputStream().flush();
+        conn.getOutputStream().close();
+
+        // Đọc phản hồi
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
             }
-
-            StringBuilder sb = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line);
-                }
-            }
-
-            return parseResult(sb.toString());
-        } catch (Exception e) {
-            XposedBridge.log("Error in translateOnline => " + e.getMessage());
-            return null;
         }
+
+        return parseResult(sb.toString());
+    } catch (Exception e) {
+        XposedBridge.log("Error in translateOnline => " + e.getMessage());
+        return null;
     }
+}
 
     private String parseResult(String json) {
     try {
