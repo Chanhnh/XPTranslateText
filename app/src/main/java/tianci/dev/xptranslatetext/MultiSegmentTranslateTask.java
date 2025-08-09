@@ -4,7 +4,6 @@ import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONException;
 import java.io.BufferedReader;
-import java.io.InputStreamWriter;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
