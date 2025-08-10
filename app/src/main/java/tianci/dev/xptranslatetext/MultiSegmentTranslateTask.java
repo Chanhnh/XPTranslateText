@@ -3,6 +3,7 @@ package tianci.dev.xptranslatetext;
 import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONException;
+
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -14,17 +15,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.ArrayList;
+
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 
-/**
- * Dịch nhiều segment, giữ nguyên các đoạn [icon]
- */
 class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boolean> {
 
     private static final String TRANSLATE_URL = "https://translate-pa.googleapis.com/v1/translateHtml";
     private static final String API_KEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
 
+    // Cache: (srcLang + tgtLang + text) -> translated
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
 
     private final XC_MethodHook.MethodHookParam mParam;
@@ -45,9 +45,18 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         String srcLang = params[0];
         String tgtLang = params[1];
 
+        // Regex để nhận diện "emoji + [mô tả icon]" và bỏ qua dịch
+        Pattern onlyIconPattern = Pattern.compile("^\\p{So}*\\[[^\\]]*]$");
+
         for (Segment seg : mSegments) {
             String txt = seg.text;
             if (txt.trim().isEmpty()) {
+                seg.translatedText = txt;
+                continue;
+            }
+
+            // Nếu chỉ là emoji + [mô tả icon] thì giữ nguyên
+            if (onlyIconPattern.matcher(txt.trim()).matches()) {
                 seg.translatedText = txt;
                 continue;
             }
@@ -58,9 +67,10 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
                 continue;
             }
 
+            // Bảo vệ icon + dịch
             String result = protectAndTranslate(txt, srcLang, tgtLang);
             if (result == null) {
-                seg.translatedText = txt;
+                seg.translatedText = txt; // fallback
             } else {
                 seg.translatedText = result;
                 translationCache.put(cacheKey, result);
@@ -70,16 +80,16 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
     }
 
     /**
-     * Thay [icon] bằng <span class="notranslate">...</span> trước khi dịch
+     * Bảo vệ phần [mô tả icon] trước khi dịch, khôi phục sau khi dịch
      */
     private String protectAndTranslate(String text, String src, String dst) {
-        List<String> icons = new ArrayList<>();
-        Matcher m = Pattern.compile("\\[.*?\\]").matcher(text);
+        List<String> bracketsContent = new ArrayList<>();
+        Matcher m = Pattern.compile("\\[[^\\]]*]").matcher(text);
         StringBuffer sb = new StringBuffer();
         int idx = 0;
         while (m.find()) {
-            icons.add(m.group());
-            m.appendReplacement(sb, "<span class=\\\"notranslate\\\">__ICON" + idx + "__</span>");
+            bracketsContent.add(m.group());
+            m.appendReplacement(sb, "__ICON" + idx + "__");
             idx++;
         }
         m.appendTail(sb);
@@ -88,9 +98,9 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         String translated = translateOnline(protectedText, src, dst);
         if (translated == null) return null;
 
-        // Khôi phục icon
-        for (int i = 0; i < icons.size(); i++) {
-            translated = translated.replace("__ICON" + i + "__", icons.get(i));
+        // Khôi phục phần [ ... ]
+        for (int i = 0; i < bracketsContent.size(); i++) {
+            translated = translated.replace("__ICON" + i + "__", bracketsContent.get(i));
         }
         return translated;
     }
@@ -104,7 +114,6 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
             conn.setDoOutput(true);
 
-            // API translateHtml nhận HTML, nên giữ nguyên tag <span>
             String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"wt_lib\"]";
 
             try (OutputStream os = conn.getOutputStream()) {
@@ -131,7 +140,7 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         try {
             JSONArray root = new JSONArray(json);
             JSONArray translatedArray = root.getJSONArray(0);
-            return translatedArray.getString(0);
+            return translatedArray.getString(0); // lấy "translated text"
         } catch (JSONException e) {
             XposedBridge.log("Error parsing translation result => " + e.getMessage());
             return null;
