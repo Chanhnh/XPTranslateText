@@ -83,43 +83,73 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
      * Tách text thành từng dòng, bảo vệ icon, và dịch dưới dạng mảng
      */
     private String translateByLines(String text, String src, String dst) {
-        // Tách text thành từng dòng (giữ nguyên ký tự xuống dòng)
-        String[] lines = text.split("(\r\n|\n|\r)", -1);
-        
-        if (lines.length == 1) {
+        // Kiểm tra xem có xuống dòng không
+        if (!text.contains("\n") && !text.contains("\r")) {
             // Chỉ có 1 dòng, dịch bình thường
             return protectAndTranslate(text, src, dst);
         }
         
-        // Có nhiều dòng, chuẩn bị mảng để dịch
+        // Tách text thành từng dòng và giữ lại thông tin về ký tự xuống dòng
+        String[] lines;
+        String lineBreakType = "\n"; // default
+        
+        if (text.contains("\r\n")) {
+            lines = text.split("\r\n", -1);
+            lineBreakType = "\r\n";
+        } else if (text.contains("\n")) {
+            lines = text.split("\n", -1);
+            lineBreakType = "\n";
+        } else if (text.contains("\r")) {
+            lines = text.split("\r", -1);
+            lineBreakType = "\r";
+        } else {
+            lines = new String[]{text};
+        }
+        
+        // Nếu sau khi split chỉ có 1 phần tử, dịch bình thường
+        if (lines.length <= 1) {
+            return protectAndTranslate(text, src, dst);
+        }
+        
+        // Chuẩn bị dữ liệu cho từng dòng
         List<String> linesToTranslate = new ArrayList<>();
-        List<String> protectedLines = new ArrayList<>();
         List<List<String>> lineIconContents = new ArrayList<>();
         
         for (String line : lines) {
+            List<String> iconContents = new ArrayList<>();
+            String protectedLine;
+            
             if (line.trim().isEmpty()) {
-                // Dòng trống giữ nguyên
-                linesToTranslate.add("");
-                protectedLines.add("");
-                lineIconContents.add(new ArrayList<>());
+                // Dòng trống
+                protectedLine = line;
             } else {
                 // Bảo vệ icon trong dòng này
-                List<String> iconContents = new ArrayList<>();
-                String protectedLine = protectIcons(line, iconContents);
-                
-                linesToTranslate.add(protectedLine);
-                protectedLines.add(protectedLine);
-                lineIconContents.add(iconContents);
+                protectedLine = protectIcons(line, iconContents);
             }
+            
+            linesToTranslate.add(protectedLine);
+            lineIconContents.add(iconContents);
+        }
+        
+        // Debug log
+        XposedBridge.log("translateByLines: splitting '" + text + "' into " + lines.length + " lines");
+        for (int i = 0; i < linesToTranslate.size(); i++) {
+            XposedBridge.log("Line " + i + ": '" + linesToTranslate.get(i) + "'");
         }
         
         // Dịch tất cả dòng cùng lúc
         List<String> translatedLines = translateLinesArray(linesToTranslate, src, dst);
-        if (translatedLines == null || translatedLines.size() != lines.length) {
-            return null;
+        if (translatedLines == null) {
+            XposedBridge.log("translateLinesArray returned null, fallback to single translation");
+            return protectAndTranslate(text, src, dst);
         }
         
-        // Khôi phục icon cho từng dòng đã dịch
+        if (translatedLines.size() != lines.length) {
+            XposedBridge.log("translateLinesArray size mismatch: expected " + lines.length + ", got " + translatedLines.size());
+            return protectAndTranslate(text, src, dst);
+        }
+        
+        // Khôi phục icon và ghép lại thành text hoàn chỉnh
         StringBuilder result = new StringBuilder();
         for (int i = 0; i < translatedLines.size(); i++) {
             String translatedLine = translatedLines.get(i);
@@ -127,19 +157,11 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             
             // Khôi phục icon
             String restoredLine = restoreIcons(translatedLine, iconContents);
-            
             result.append(restoredLine);
             
-            // Thêm xuống dòng (trừ dòng cuối)
+            // Thêm xuống dòng (trừ dòng cuối cùng)
             if (i < translatedLines.size() - 1) {
-                // Xác định loại xuống dòng từ text gốc
-                if (text.contains("\r\n")) {
-                    result.append("\r\n");
-                } else if (text.contains("\n")) {
-                    result.append("\n");
-                } else if (text.contains("\r")) {
-                    result.append("\r");
-                }
+                result.append(lineBreakType);
             }
         }
         
@@ -195,11 +217,16 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             linesArray.append("]");
 
             String payload = "[[[" + linesArray.toString() + "],\"" + src + "\",\"" + dst + "\"],\"te\"]";
+            
+            XposedBridge.log("translateLinesArray payload: " + payload);
 
             try (OutputStream os = conn.getOutputStream()) {
                 byte[] input = payload.getBytes("UTF-8");
                 os.write(input, 0, input.length);
             }
+
+            int responseCode = conn.getResponseCode();
+            XposedBridge.log("translateLinesArray response code: " + responseCode);
 
             StringBuilder sb = new StringBuilder();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
@@ -208,10 +235,14 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
                     sb.append(line);
                 }
             }
+            
+            String response = sb.toString();
+            XposedBridge.log("translateLinesArray response: " + response);
 
-            return parseLinesResult(sb.toString());
+            return parseLinesResult(response);
         } catch (Exception e) {
             XposedBridge.log("Error in translateLinesArray => " + e.getMessage());
+            e.printStackTrace();
             return null;
         }
     }
