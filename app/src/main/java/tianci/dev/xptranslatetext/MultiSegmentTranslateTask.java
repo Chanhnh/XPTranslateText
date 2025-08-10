@@ -67,8 +67,8 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
                 continue;
             }
 
-            // Bảo vệ icon + dịch
-            String result = protectAndTranslate(txt, srcLang, tgtLang);
+            // Dịch theo từng dòng
+            String result = translateByLines(txt, srcLang, tgtLang);
             if (result == null) {
                 seg.translatedText = txt; // fallback
             } else {
@@ -80,38 +80,172 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
     }
 
     /**
-     * Bảo vệ phần [mô tả icon] trước khi dịch, khôi phục sau khi dịch
+     * Tách text thành từng dòng, bảo vệ icon, và dịch dưới dạng mảng
      */
-    private String protectAndTranslate(String text, String src, String dst) {
-        // Bảo vệ xuống dòng
-        text = text.replace("\n", "\",\"") // Placeholder newline
-                    .replace("\r\n", "\",\"") // Windows -> Unix
-                    .replace("\r", "\",\"")   // Mac cũ -> Unix
-                    .replace("\u2028", "\",\"") // Unicode line separator
-                    .replace("\u2029", "\",\""); // Unicode paragraph separator
+    private String translateByLines(String text, String src, String dst) {
+        // Tách text thành từng dòng (giữ nguyên ký tự xuống dòng)
+        String[] lines = text.split("(\r\n|\n|\r)", -1);
         
-        List<String> bracketsContent = new ArrayList<>();
+        if (lines.length == 1) {
+            // Chỉ có 1 dòng, dịch bình thường
+            return protectAndTranslate(text, src, dst);
+        }
+        
+        // Có nhiều dòng, chuẩn bị mảng để dịch
+        List<String> linesToTranslate = new ArrayList<>();
+        List<String> protectedLines = new ArrayList<>();
+        List<List<String>> lineIconContents = new ArrayList<>();
+        
+        for (String line : lines) {
+            if (line.trim().isEmpty()) {
+                // Dòng trống giữ nguyên
+                linesToTranslate.add("");
+                protectedLines.add("");
+                lineIconContents.add(new ArrayList<>());
+            } else {
+                // Bảo vệ icon trong dòng này
+                List<String> iconContents = new ArrayList<>();
+                String protectedLine = protectIcons(line, iconContents);
+                
+                linesToTranslate.add(protectedLine);
+                protectedLines.add(protectedLine);
+                lineIconContents.add(iconContents);
+            }
+        }
+        
+        // Dịch tất cả dòng cùng lúc
+        List<String> translatedLines = translateLinesArray(linesToTranslate, src, dst);
+        if (translatedLines == null || translatedLines.size() != lines.length) {
+            return null;
+        }
+        
+        // Khôi phục icon cho từng dòng đã dịch
+        StringBuilder result = new StringBuilder();
+        for (int i = 0; i < translatedLines.size(); i++) {
+            String translatedLine = translatedLines.get(i);
+            List<String> iconContents = lineIconContents.get(i);
+            
+            // Khôi phục icon
+            String restoredLine = restoreIcons(translatedLine, iconContents);
+            
+            result.append(restoredLine);
+            
+            // Thêm xuống dòng (trừ dòng cuối)
+            if (i < translatedLines.size() - 1) {
+                // Xác định loại xuống dòng từ text gốc
+                if (text.contains("\r\n")) {
+                    result.append("\r\n");
+                } else if (text.contains("\n")) {
+                    result.append("\n");
+                } else if (text.contains("\r")) {
+                    result.append("\r");
+                }
+            }
+        }
+        
+        return result.toString();
+    }
+
+    /**
+     * Bảo vệ icon trong một dòng
+     */
+    private String protectIcons(String text, List<String> iconContents) {
         Matcher m = Pattern.compile("\\[[^\\]]*]").matcher(text);
         StringBuffer sb = new StringBuffer();
         int idx = 0;
         while (m.find()) {
-            bracketsContent.add(m.group());
+            iconContents.add(m.group());
             m.appendReplacement(sb, "__ICON" + idx + "__");
             idx++;
         }
         m.appendTail(sb);
-        String protectedText = sb.toString();
+        return sb.toString();
+    }
+
+    /**
+     * Khôi phục icon trong một dòng đã dịch
+     */
+    private String restoreIcons(String translatedText, List<String> iconContents) {
+        String result = translatedText;
+        for (int i = 0; i < iconContents.size(); i++) {
+            result = result.replace("__ICON" + i + "__", iconContents.get(i));
+        }
+        return result;
+    }
+
+    /**
+     * Dịch mảng các dòng cùng lúc
+     */
+    private List<String> translateLinesArray(List<String> lines, String src, String dst) {
+        try {
+            URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json+protobuf");
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            conn.setDoOutput(true);
+
+            // Tạo mảng JSON cho payload: [["line1","line2","line3"],"src","dst"]
+            StringBuilder linesArray = new StringBuilder();
+            linesArray.append("[");
+            for (int i = 0; i < lines.size(); i++) {
+                if (i > 0) linesArray.append(",");
+                linesArray.append("\"").append(escapeJson(lines.get(i))).append("\"");
+            }
+            linesArray.append("]");
+
+            String payload = "[[[" + linesArray.toString() + "],\"" + src + "\",\"" + dst + "\"],\"te\"]";
+
+            try (OutputStream os = conn.getOutputStream()) {
+                byte[] input = payload.getBytes("UTF-8");
+                os.write(input, 0, input.length);
+            }
+
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+            }
+
+            return parseLinesResult(sb.toString());
+        } catch (Exception e) {
+            XposedBridge.log("Error in translateLinesArray => " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Parse kết quả dịch mảng
+     */
+    private List<String> parseLinesResult(String json) {
+        try {
+            JSONArray root = new JSONArray(json);
+            JSONArray translatedArray = root.getJSONArray(0);
+            
+            List<String> result = new ArrayList<>();
+            for (int i = 0; i < translatedArray.length(); i++) {
+                result.add(translatedArray.getString(i));
+            }
+            return result;
+        } catch (JSONException e) {
+            XposedBridge.log("Error parsing lines translation result => " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Dịch đơn lẻ cho trường hợp 1 dòng (fallback)
+     */
+    private String protectAndTranslate(String text, String src, String dst) {
+        List<String> bracketsContent = new ArrayList<>();
+        String protectedText = protectIcons(text, bracketsContent);
 
         String translated = translateOnline(protectedText, src, dst);
         if (translated == null) return null;
 
-        // Khôi phục phần [ ... ]
-        for (int i = 0; i < bracketsContent.size(); i++) {
-            translated = translated.replace("__ICON" + i + "__", bracketsContent.get(i));
-        }
-        
-        translated = translated.replace("\",\"", "\n");
-        return translated;
+        return restoreIcons(translated, bracketsContent);
     }
 
     private String translateOnline(String text, String src, String dst) {
@@ -149,7 +283,7 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         try {
             JSONArray root = new JSONArray(json);
             JSONArray translatedArray = root.getJSONArray(0);
-            return translatedArray.getString(0); // lấy "translated text"
+            return translatedArray.getString(0);
         } catch (JSONException e) {
             XposedBridge.log("Error parsing translation result => " + e.getMessage());
             return null;
@@ -159,7 +293,8 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
     private String escapeJson(String s) {
         return s.replace("\\", "\\\\")
                 .replace("\"", "\\\"")
-                .replace("\n", "\\n");
+                .replace("\n", "\\n")
+                .replace("\r", "\\r");
     }
 
     @Override
