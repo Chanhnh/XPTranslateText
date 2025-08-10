@@ -84,7 +84,7 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
      */
     private String protectAndTranslate(String text, String src, String dst) {
         // Bảo vệ xuống dòng
-        text = text.replace("\n", "<br>"); // Placeholder newline
+        text = text.replace("\n", "<br>") // Placeholder newline
                     .replace("\r\n", "<br>") // Windows -> Unix
                     .replace("\r", "<br>")   // Mac cũ -> Unix
                     .replace("\u2028", "<br>") // Unicode line separator
