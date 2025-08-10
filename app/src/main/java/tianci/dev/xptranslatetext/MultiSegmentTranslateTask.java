@@ -83,6 +83,9 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
      * Bảo vệ phần [mô tả icon] trước khi dịch, khôi phục sau khi dịch
      */
     private String protectAndTranslate(String text, String src, String dst) {
+        // Bảo vệ xuống dòng
+        text = text.replace("\n", "\uE000"); // Placeholder newline
+        
         List<String> bracketsContent = new ArrayList<>();
         Matcher m = Pattern.compile("\\[[^\\]]*]").matcher(text);
         StringBuffer sb = new StringBuffer();
@@ -102,6 +105,8 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         for (int i = 0; i < bracketsContent.size(); i++) {
             translated = translated.replace("__ICON" + i + "__", bracketsContent.get(i));
         }
+        
+        translated = translated.replace("\uE000", "\n");
         return translated;
     }
 
@@ -114,7 +119,7 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
             conn.setDoOutput(true);
 
-            String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"wt_lib\"]";
+            String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"te\"]";
 
             try (OutputStream os = conn.getOutputStream()) {
                 byte[] input = payload.getBytes("UTF-8");
