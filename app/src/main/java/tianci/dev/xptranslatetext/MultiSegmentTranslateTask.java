@@ -58,7 +58,32 @@ class MultiSegmentTranslateTask {
     }
     
     /**
-     * Bắt đầu quá trình dịch bất đồng bộ
+     * Method tương thích với AsyncTask để giữ nguyên cách gọi từ HookMain
+     */
+    public MultiSegmentTranslateTask execute(String... params) {
+        if (params.length < 2) {
+            onPostExecute(false);
+            return this;
+        }
+        
+        String srcLang = params[0];
+        String tgtLang = params[1];
+        
+        CompletableFuture.supplyAsync(() -> doInBackground(srcLang, tgtLang), TRANSLATION_EXECUTOR)
+            .orTimeout(30, TimeUnit.SECONDS)
+            .whenComplete((success, throwable) -> {
+                if (throwable != null) {
+                    XposedBridge.log("Translation failed: " + throwable.getMessage());
+                    success = false;
+                }
+                onPostExecute(success);
+            });
+            
+        return this;
+    }
+    
+    /**
+     * Bắt đầu quá trình dịch bất đồng bộ - method mới tối ưu hơn
      */
     public void executeAsync(String srcLang, String tgtLang) {
         CompletableFuture.supplyAsync(() -> doInBackground(srcLang, tgtLang), TRANSLATION_EXECUTOR)
