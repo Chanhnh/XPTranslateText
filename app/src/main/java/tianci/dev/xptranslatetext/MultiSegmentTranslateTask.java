@@ -83,106 +83,67 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
      * Bảo vệ phần [mô tả icon] trước khi dịch, khôi phục sau khi dịch
      */
     private String protectAndTranslate(String text, String src, String dst) {
-    // Bảo vệ phần icon [mô tả]
-    List<String> bracketsContent = new ArrayList<>();
-    Matcher m = Pattern.compile("\\[[^\\]]*]").matcher(text);
-    StringBuffer sb = new StringBuffer();
-    int idx = 0;
-    while (m.find()) {
-        bracketsContent.add(m.group());
-        m.appendReplacement(sb, "__ICON" + idx + "__");
-        idx++;
-    }
-    m.appendTail(sb);
-    String protectedText = sb.toString();
-
-    // Tách theo dòng
-    String[] lines = protectedText.split("\n", -1);
-
-    String translated = translateOnlineMultiple(lines, src, dst);
-
-    if (translated == null) return null;
-
-    // Khôi phục icon
-    for (int i = 0; i < bracketsContent.size(); i++) {
-        translated = translated.replace("__ICON" + i + "__", bracketsContent.get(i));
-    }
-
-    return translated;
-}
-
-private String translateOnlineMultiple(String[] lines, String src, String dst) {
-    try {
-        URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", "application/json+protobuf");
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0");
-        conn.setDoOutput(true);
-
-        // Xây dựng JSON array cho từng dòng
-        // Dạng [[[line1], [line2], ...], src, dst], "te"
-        JSONArray linesArray = new JSONArray();
-        for (String line : lines) {
-            JSONArray lineArr = new JSONArray();
-            lineArr.put(line);
-            linesArray.put(lineArr);
+        // Bảo vệ xuống dòng
+        text = text.replace("\n", "\",\"") // Placeholder newline
+                    .replace("\r\n", "\",\"") // Windows -> Unix
+                    .replace("\r", "\",\"")   // Mac cũ -> Unix
+                    .replace("\u2028", "\",\"") // Unicode line separator
+                    .replace("\u2029", "\",\""); // Unicode paragraph separator
+        
+        List<String> bracketsContent = new ArrayList<>();
+        Matcher m = Pattern.compile("\\[[^\\]]*]").matcher(text);
+        StringBuffer sb = new StringBuffer();
+        int idx = 0;
+        while (m.find()) {
+            bracketsContent.add(m.group());
+            m.appendReplacement(sb, "__ICON" + idx + "__");
+            idx++;
         }
-        JSONArray rootArr = new JSONArray();
-        rootArr.put(linesArray);
-        rootArr.put(src);
-        rootArr.put(dst);
+        m.appendTail(sb);
+        String protectedText = sb.toString();
 
-        JSONArray finalArr = new JSONArray();
-        finalArr.put(rootArr);
-        finalArr.put("te");
+        String translated = translateOnline(protectedText, src, dst);
+        if (translated == null) return null;
 
-        String payload = finalArr.toString();
-
-        try (OutputStream os = conn.getOutputStream()) {
-            byte[] input = payload.getBytes("UTF-8");
-            os.write(input, 0, input.length);
+        // Khôi phục phần [ ... ]
+        for (int i = 0; i < bracketsContent.size(); i++) {
+            translated = translated.replace("__ICON" + i + "__", bracketsContent.get(i));
         }
+        
+        translated = translated.replace("\",\"", "\n");
+        return translated;
+    }
 
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line);
+    private String translateOnline(String text, String src, String dst) {
+        try {
+            URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json+protobuf");
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            conn.setDoOutput(true);
+
+            String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"te\"]";
+
+            try (OutputStream os = conn.getOutputStream()) {
+                byte[] input = payload.getBytes("UTF-8");
+                os.write(input, 0, input.length);
             }
-        }
 
-        // Parse kết quả: mảng chứa mảng các đoạn dịch tương ứng từng dòng
-        return parseMultiLineResult(sb.toString());
-
-    } catch (Exception e) {
-        XposedBridge.log("Error in translateOnlineMultiple => " + e.getMessage());
-        return null;
-    }
-}
-
-private String parseMultiLineResult(String json) {
-    try {
-        JSONArray root = new JSONArray(json);
-        JSONArray translations = root.getJSONArray(0);
-
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < translations.length(); i++) {
-            JSONArray lineTranslation = translations.getJSONArray(i);
-            // lineTranslation.getString(0) chứa đoạn dịch của dòng i
-            String translatedLine = lineTranslation.getString(0);
-            sb.append(translatedLine);
-            if (i < translations.length() - 1) {
-                sb.append("\n"); // giữ nguyên xuống dòng
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
             }
-        }
-        return sb.toString();
-    } catch (JSONException e) {
-        XposedBridge.log("Error parsing multi line translation => " + e.getMessage());
-        return null;
-    }
-}
 
+            return parseResult(sb.toString());
+        } catch (Exception e) {
+            XposedBridge.log("Error in translateOnline => " + e.getMessage());
+            return null;
+        }
+    }
 
     private String parseResult(String json) {
         try {
