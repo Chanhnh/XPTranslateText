@@ -1,5 +1,6 @@
 package tianci.dev.xptranslatetext;
 
+import android.text.Html;
 import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -218,10 +219,40 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         try {
             JSONArray root = new JSONArray(json);
             JSONArray translatedArray = root.getJSONArray(0);
-            return translatedArray.getString(0);
+            String result = translatedArray.getString(0);
+            
+            // Decode HTML entities
+            result = decodeHtmlEntities(result);
+            
+            return result;
         } catch (JSONException e) {
             XposedBridge.log("Error parsing translation result => " + e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Decode HTML entities trong kết quả dịch
+     */
+    private String decodeHtmlEntities(String text) {
+        if (text == null) return null;
+        
+        try {
+            // Sử dụng Android's Html.fromHtml để decode HTML entities
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                return Html.fromHtml(text, Html.FROM_HTML_MODE_LEGACY).toString();
+            } else {
+                return Html.fromHtml(text).toString();
+            }
+        } catch (Exception e) {
+            // Fallback to manual decode nếu Html.fromHtml() fail
+            return text.replace("&quot;", "\"")
+                       .replace("&amp;", "&")
+                       .replace("&lt;", "<")
+                       .replace("&gt;", ">")
+                       .replace("&apos;", "'")
+                       .replace("&#39;", "'")
+                       .replace("&nbsp;", " ");
         }
     }
 
