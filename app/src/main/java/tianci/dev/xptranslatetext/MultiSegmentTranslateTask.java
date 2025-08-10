@@ -84,7 +84,11 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
      */
     private String protectAndTranslate(String text, String src, String dst) {
         // Bảo vệ xuống dòng
-        text = text.replace("\n", "\uE000"); // Placeholder newline
+        text = text.replace("\n", "<br>"); // Placeholder newline
+                    .replace("\r\n", "<br>") // Windows -> Unix
+                    .replace("\r", "<br>")   // Mac cũ -> Unix
+                    .replace("\u2028", "<br>") // Unicode line separator
+                    .replace("\u2029", "<br>"); // Unicode paragraph separator
         
         List<String> bracketsContent = new ArrayList<>();
         Matcher m = Pattern.compile("\\[[^\\]]*]").matcher(text);
@@ -106,7 +110,7 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             translated = translated.replace("__ICON" + i + "__", bracketsContent.get(i));
         }
         
-        translated = translated.replace("\uE000", "\n");
+        translated = translated.replace("<br>", "\n");
         return translated;
     }
 
