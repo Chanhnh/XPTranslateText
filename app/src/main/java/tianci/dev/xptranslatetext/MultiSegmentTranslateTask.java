@@ -3,7 +3,6 @@ package tianci.dev.xptranslatetext;
 import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONException;
-
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -15,20 +14,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.ArrayList;
-
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 
 /**
- * Multi-segment translation task using translate-pa.googleapis.com
- * with icon protection for [ ... ] patterns and preserving new lines.
+ * Dịch nhiều segment, giữ nguyên các đoạn [icon]
  */
 class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boolean> {
 
     private static final String TRANSLATE_URL = "https://translate-pa.googleapis.com/v1/translateHtml";
     private static final String API_KEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
 
-    // Cache: (srcLang + tgtLang + text) -> translated
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
 
     private final XC_MethodHook.MethodHookParam mParam;
@@ -74,31 +70,28 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
     }
 
     /**
-     * Protect [icon] parts, translate, then restore them.
+     * Thay [icon] bằng <span class="notranslate">...</span> trước khi dịch
      */
     private String protectAndTranslate(String text, String src, String dst) {
-        // Step 1: protect [ ... ] blocks
         List<String> icons = new ArrayList<>();
         Matcher m = Pattern.compile("\\[.*?\\]").matcher(text);
         StringBuffer sb = new StringBuffer();
         int idx = 0;
         while (m.find()) {
             icons.add(m.group());
-            m.appendReplacement(sb, "__ICON" + idx + "__");
+            m.appendReplacement(sb, "<span class=\\\"notranslate\\\">__ICON" + idx + "__</span>");
             idx++;
         }
         m.appendTail(sb);
         String protectedText = sb.toString();
 
-        // Step 2: translate
         String translated = translateOnline(protectedText, src, dst);
         if (translated == null) return null;
 
-        // Step 3: restore icons
+        // Khôi phục icon
         for (int i = 0; i < icons.size(); i++) {
             translated = translated.replace("__ICON" + i + "__", icons.get(i));
         }
-
         return translated;
     }
 
@@ -111,7 +104,9 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
             conn.setDoOutput(true);
 
+            // API translateHtml nhận HTML, nên giữ nguyên tag <span>
             String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"wt_lib\"]";
+
             try (OutputStream os = conn.getOutputStream()) {
                 byte[] input = payload.getBytes("UTF-8");
                 os.write(input, 0, input.length);
@@ -121,20 +116,17 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    sb.append(line).append("\n"); // giữ nguyên xuống dòng
+                    sb.append(line);
                 }
             }
 
-            return parseResult(sb.toString().trim());
+            return parseResult(sb.toString());
         } catch (Exception e) {
             XposedBridge.log("Error in translateOnline => " + e.getMessage());
             return null;
         }
     }
 
-    /**
-     * Parse API response: [["translated text"], ["detected language"]]
-     */
     private String parseResult(String json) {
         try {
             JSONArray root = new JSONArray(json);
@@ -146,13 +138,10 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         }
     }
 
-    /**
-     * Escape JSON string but keep real newlines.
-     */
     private String escapeJson(String s) {
         return s.replace("\\", "\\\\")
-                .replace("\"", "\\\"");
-        // Giữ nguyên \n, không replace
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n");
     }
 
     @Override
