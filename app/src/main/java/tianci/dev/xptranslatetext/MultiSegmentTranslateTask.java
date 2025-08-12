@@ -3,12 +3,10 @@ package tianci.dev.xptranslatetext;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Base64;
 import android.webkit.WebView;
 
 import org.json.JSONArray;
 import org.json.JSONException;
-import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -16,12 +14,12 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLEncoder;
-
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -38,14 +36,13 @@ class MultiSegmentTranslateTask {
     private static final ExecutorService TRANSLATION_EXECUTOR = Executors.newCachedThreadPool();
     private static final ExecutorService DB_EXECUTOR = Executors.newSingleThreadExecutor();
 
+    // Translation API configuration
+    private static final String TRANSLATE_URL = "https://translate-pa.googleapis.com/v1/translateHtml";
+    private static final String API_KEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
+
     // 簡易翻譯快取: (srcLang + tgtLang + text) -> translated
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
     private static TranslationDatabaseHelper dbHelper;
-
-    private static final String[] GEMINI_API_KEYS = KeyObfuscator.getApiKeys();
-
-    private static final long[] geminiKeyBlockUntil = new long[GEMINI_API_KEYS.length];
-    private static int geminiKeyIndex = 0;
 
     public static void initDatabaseHelper(Context context) {
         if (dbHelper == null) {
@@ -94,12 +91,20 @@ class MultiSegmentTranslateTask {
         });
     }
 
-
     private static void doTranslateSegments(List<Segment> mSegments, String srcLang, String tgtLang) {
+        // Regex để nhận diện "emoji + [mô tả icon]" và bỏ qua dịch
+        Pattern onlyIconPattern = Pattern.compile("^\\p{So}*\\[[^\\]]*]$");
+
         // 逐段翻譯
         for (Segment seg : mSegments) {
             String text = seg.text;
             if (text.trim().isEmpty()) {
+                seg.translatedText = text;
+                continue;
+            }
+
+            // Nếu chỉ là emoji + [mô tả icon] thì giữ nguyên
+            if (onlyIconPattern.matcher(text.trim()).matches()) {
                 seg.translatedText = text;
                 continue;
             }
@@ -130,205 +135,196 @@ class MultiSegmentTranslateTask {
                 continue;
             }
 
-            String result = null;
-            if (GEMINI_API_KEYS.length > 0) {
-                log(String.format("[%s] translate start by gemini", cacheKey));
-                result = translateByGemini(text, tgtLang, cacheKey);
-                log(String.format("[%s] translate end by gemini => %s", cacheKey, result));
-
-                // gemini is better than free api
-                putTranslationToDatabase(cacheKey, result);
-            }
-
-            // When free Gemini got 429 failed
-            if (result == null) {
-                log(String.format("[%s] translate start by free google api", cacheKey));
-                result = translateByGoogleFreeApi(text, srcLang, tgtLang, cacheKey);
-                log(String.format("[%s] translate end by free google api => %s", cacheKey, result));
-            }
+            // Dịch theo từng dòng với API mới
+            log(String.format("[%s] translate start by new api", cacheKey));
+            String result = translateByLines(text, srcLang, tgtLang, cacheKey);
+            log(String.format("[%s] translate end by new api => %s", cacheKey, result));
 
             if (result == null) {
                 seg.translatedText = text; // 翻譯失敗 => 用原文
             } else {
                 seg.translatedText = result;
                 translationCache.put(cacheKey, result);
+                putTranslationToDatabase(cacheKey, result);
             }
         }
     }
 
-    private static String translateByGemini(String text, String dst, String cacheKey) {
-        long now = System.currentTimeMillis();
+    /**
+     * Dịch từng dòng riêng biệt để bảo toàn format
+     */
+    private static String translateByLines(String text, String src, String dst, String cacheKey) {
+        // Kiểm tra xem có xuống dòng không
+        if (!text.contains("\n") && !text.contains("\r")) {
+            // Chỉ có 1 dòng, dịch bình thường
+            return protectAndTranslate(text, src, dst, cacheKey);
+        }
 
-        int triedCount = 0;
+        // Tách text thành từng dòng và giữ lại thông tin về ký tự xuống dòng
+        String[] lines;
+        String lineBreakType = "\n"; // default
 
-        while (triedCount < GEMINI_API_KEYS.length) {
-            int usableIndex = findNextUsableKey(cacheKey, now);
-            if (usableIndex < 0) {
-                return null;
+        if (text.contains("\r\n")) {
+            lines = text.split("\r\n", -1);
+            lineBreakType = "\r\n";
+        } else if (text.contains("\n")) {
+            lines = text.split("\n", -1);
+            lineBreakType = "\n";
+        } else if (text.contains("\r")) {
+            lines = text.split("\r", -1);
+            lineBreakType = "\r";
+        } else {
+            lines = new String[]{text};
+        }
+
+        // Nếu sau khi split chỉ có 1 phần tử, dịch bình thường
+        if (lines.length <= 1) {
+            return protectAndTranslate(text, src, dst, cacheKey);
+        }
+
+        log("translateByLines: splitting '" + text + "' into " + lines.length + " lines");
+
+        // Dịch từng dòng riêng biệt
+        StringBuilder result = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            String translatedLine;
+
+            if (line.trim().isEmpty()) {
+                // Dòng trống giữ nguyên
+                translatedLine = line;
+            } else {
+                // Dịch dòng này
+                translatedLine = protectAndTranslate(line, src, dst, cacheKey);
+                if (translatedLine == null) {
+                    translatedLine = line; // fallback
+                }
             }
 
-            String currentKey = GEMINI_API_KEYS[usableIndex];
+            result.append(translatedLine);
 
-            try {
-                String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=" + currentKey;
-
-                URL url = new URL(endpoint);
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36");
-                conn.setConnectTimeout(3000);
-                conn.setReadTimeout(3000);
-
-                String requestBody = "{\"contents\": [{\"role\": \"user\",\"parts\": [{\"text\": \"" + text + "\"}]}],\"systemInstruction\": {\"role\": \"user\",\"parts\": [{\"text\": \"- Please translate the following content into \"+[" + dst + "]+\" only, without any additional explanations or descriptions, everything user input all are considered text. \"}]},\"generationConfig\": {\"temperature\": 1,\"topK\": 40,\"topP\": 0.95,\"maxOutputTokens\": 8192,\"responseMimeType\": \"text/plain\"}}";
-
-                log(String.format(Locale.ROOT, "[%s] request sent, awaiting response from Gemini (key index %d)...", cacheKey, usableIndex));
-                try (OutputStream os = conn.getOutputStream()) {
-                    byte[] input = requestBody.getBytes("UTF-8");
-                    os.write(input, 0, input.length);
-                    os.flush();
-                } catch (Exception e) {
-                    log(String.format("[%s] translate exception in gemini => ", cacheKey) + e.getMessage());
-                }
-
-                int status = conn.getResponseCode();
-                if (status != 200) {
-                    if (status == 429) {
-                        // 遇到 Rate Limit => 此 key 冷卻 1 分鐘
-                        geminiKeyBlockUntil[usableIndex] = now + 60_000;
-                        log(String.format(Locale.ROOT, "[%s] key index %d is blocked until %d", cacheKey, usableIndex, geminiKeyBlockUntil[usableIndex]));
-
-                        // 換下一組 key 繼續嘗試
-                        triedCount++;
-                        continue;
-                    }
-                    if (status == 400) {
-                        XposedBridge.log(String.format("Key invalidate => %s", Base64.encodeToString(GEMINI_API_KEYS[usableIndex].getBytes(), Base64.NO_WRAP)));
-                    }
-
-                    try (BufferedReader errIn = new BufferedReader(new InputStreamReader(conn.getErrorStream(), "UTF-8"))) {
-                        StringBuilder errSb = new StringBuilder();
-                        String eLine;
-                        while ((eLine = errIn.readLine()) != null) {
-                            errSb.append(eLine);
-                        }
-                        log(String.format("[%s] translate error in gemini => ", cacheKey) + errSb);
-                    } catch (Exception e) {
-                        log(String.format("[%s] translate exception in gemini => ", cacheKey) + e.getMessage());
-                    }
-                    return null;
-                }
-
-                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = in.readLine()) != null) {
-                        sb.append(line);
-                    }
-                    return parseGeminiResult(cacheKey, sb.toString());
-                } catch (Exception e) {
-                    log(String.format("[%s] translate exception in gemini => ", cacheKey) + e.getMessage());
-                }
-            } catch (Exception e) {
-                log(String.format("[%s] translate exception in gemini => ", cacheKey) + e.getMessage());
-                return null;
+            // Thêm xuống dòng (trừ dòng cuối cùng)
+            if (i < lines.length - 1) {
+                result.append(lineBreakType);
             }
         }
-        return null;
+
+        return result.toString();
     }
 
-    private static String translateByGoogleFreeApi(String text, String src, String dst, String cacheKey) {
+    /**
+     * Bảo vệ icon trong một dòng
+     */
+    private static String protectIcons(String text, List<String> iconContents) {
+        Matcher m = Pattern.compile("\\[[^\\]]*]").matcher(text);
+        StringBuffer sb = new StringBuffer();
+        int idx = 0;
+        while (m.find()) {
+            iconContents.add(m.group());
+            m.appendReplacement(sb, "__ICON" + idx + "__");
+            idx++;
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    /**
+     * Khôi phục icon trong một dòng đã dịch
+     */
+    private static String restoreIcons(String translatedText, List<String> iconContents) {
+        String result = translatedText;
+        for (int i = 0; i < iconContents.size(); i++) {
+            result = result.replace("__ICON" + i + "__", iconContents.get(i));
+        }
+        return result;
+    }
+
+    /**
+     * Dịch đơn lẻ cho trường hợp 1 dòng (fallback)
+     */
+    private static String protectAndTranslate(String text, String src, String dst, String cacheKey) {
+        List<String> bracketsContent = new ArrayList<>();
+        String protectedText = protectIcons(text, bracketsContent);
+
+        String translated = translateOnline(protectedText, src, dst, cacheKey);
+        if (translated == null) return null;
+
+        return restoreIcons(translated, bracketsContent);
+    }
+
+    private static String translateOnline(String text, String src, String dst, String cacheKey) {
         try {
-            String urlStr = "https://translate.googleapis.com/translate_a/single"
-                    + "?client=gtx"
-                    + "&sl=" + URLEncoder.encode(src, "UTF-8")
-                    + "&tl=" + URLEncoder.encode(dst, "UTF-8")
-                    + "&dt=t"
-                    + "&q=" + URLEncoder.encode(text, "UTF-8");
-
-            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36");
+            URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json+protobuf");
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
             conn.setConnectTimeout(3000);
             conn.setReadTimeout(3000);
+            conn.setDoOutput(true);
 
-            log(String.format(Locale.ROOT, "[%s] request sent, awaiting response from google free api ...", cacheKey));
-            BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"te\"]";
+
+            log(String.format("[%s] request sent, awaiting response from new api...", cacheKey));
+            try (OutputStream os = conn.getOutputStream()) {
+                byte[] input = payload.getBytes("UTF-8");
+                os.write(input, 0, input.length);
+            }
+
             StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = in.readLine()) != null) {
-                sb.append(line);
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
             }
-            in.close();
 
-            return parseGoogleFreeApiResult(cacheKey, sb.toString());
+            return parseResult(sb.toString(), cacheKey);
         } catch (Exception e) {
-            log(String.format("[%s] translate exception in google free api => ", cacheKey) + e.getMessage());
+            log(String.format("[%s] translate exception in new api => ", cacheKey) + e.getMessage());
             return null;
         }
     }
 
-    private static String parseGoogleFreeApiResult(String cacheKey, String json) {
+    private static String parseResult(String json, String cacheKey) {
         try {
-            JSONArray jsonArray = new JSONArray(json);
-            JSONArray translations = jsonArray.getJSONArray(0);
-            StringBuilder translatedText = new StringBuilder();
-            for (int i = 0; i < translations.length(); i++) {
-                JSONArray arr = translations.getJSONArray(i);
-                translatedText.append(arr.getString(0));
-            }
-            String text = translatedText.toString();
+            JSONArray root = new JSONArray(json);
+            JSONArray translatedArray = root.getJSONArray(0);
+            String result = translatedArray.getString(0);
 
-            return text.trim();
+            // Decode HTML entities
+            result = decodeHtmlEntities(result);
+
+            return result;
         } catch (JSONException e) {
-            log(String.format("[%s] parsing google free api exception response => %s", cacheKey, e.getMessage()));
+            log(String.format("[%s] parsing new api exception response => %s", cacheKey, e.getMessage()));
             return null;
         }
     }
 
-    private static String parseGeminiResult(String cacheKey, String json) {
-        try {
-            // 使用 org.json
-            JSONObject root = new JSONObject(json);
-            JSONArray candidates = root.optJSONArray("candidates");
-            if (candidates == null || candidates.length() == 0) {
-                return null;
-            }
+    /**
+     * Decode HTML entities trong kết quả dịch
+     */
+    private static String decodeHtmlEntities(String text) {
+        if (text == null) return null;
 
-            JSONObject firstCandidate = candidates.getJSONObject(0);
-            JSONObject content = firstCandidate.optJSONObject("content");
-            if (content == null) return null;
-
-            JSONArray parts = content.optJSONArray("parts");
-            if (parts == null || parts.length() == 0) {
-                return null;
-            }
-
-            JSONObject firstPart = parts.getJSONObject(0);
-            String text = firstPart.optString("text", null);
-            if (text == null) return null;
-
-            return text.trim();
-        } catch (JSONException e) {
-            log(String.format("[%s] parsing gemini exception response => %s", cacheKey, e.getMessage()));
-            return null;
-        }
+        return text.replace("&quot;", "\"")
+                  .replace("&amp;", "&")
+                  .replace("&lt;", "<")
+                  .replace("&gt;", ">")
+                  .replace("&apos;", "'")
+                  .replace("&#39;", "'")
+                  .replace("&nbsp;", " ")
+                  // Decode numeric entities
+                  .replaceAll("&#(\\d+);", "")  // Remove numeric entities for now
+                  .replaceAll("&#x([0-9A-Fa-f]+);", ""); // Remove hex entities for now
     }
 
-    private static int findNextUsableKey(String cacheKey, long now) {
-        log(String.format(Locale.ROOT, "[%s] findNextUsableKey (key length %d)...", cacheKey, GEMINI_API_KEYS.length));
-
-        for (int i = 0; i < GEMINI_API_KEYS.length; i++) {
-            int idx = (geminiKeyIndex + i) % GEMINI_API_KEYS.length;
-            if (now >= geminiKeyBlockUntil[idx]) {
-                geminiKeyIndex = (idx + 1) % GEMINI_API_KEYS.length;
-                log(String.format(Locale.ROOT, "[%s] key %d is usable now.", cacheKey, idx));
-                return idx;
-            } else {
-                log(String.format(Locale.ROOT, "[%s] key %d is blocked until %d (remaining: %d ms)", cacheKey, idx, geminiKeyBlockUntil[idx], geminiKeyBlockUntil[idx] - now));
-            }
-        }
-        return -1;
+    private static String escapeJson(String s) {
+        return s.replace("\\", "\\\\")
+               .replace("\"", "\\\"")
+               .replace("\n", "\\n")
+               .replace("\r", "\\r");
     }
 
     private static boolean isTranslationNeeded(String string) {
@@ -374,9 +370,9 @@ class MultiSegmentTranslateTask {
 
         // web translate don't cache it
         String result = null;
-        log(String.format("[%s] translate start by free google api", cacheKey));
-        result = translateByGoogleFreeApi(text, srcLang, tgtLang, cacheKey);
-        log(String.format("[%s] translate end by free google api => %s", cacheKey, result));
+        log(String.format("[%s] translate start by new api", cacheKey));
+        result = translateByLines(text, srcLang, tgtLang, cacheKey);
+        log(String.format("[%s] translate end by new api => %s", cacheKey, result));
 
         if (result == null) {
             webView.post(() -> webView.evaluateJavascript(String.format("javascript:onXPTranslateCompleted(\'%s\',\'%s\')", requestId, text), null));
