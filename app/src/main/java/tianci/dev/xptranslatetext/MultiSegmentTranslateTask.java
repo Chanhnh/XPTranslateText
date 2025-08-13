@@ -129,9 +129,6 @@ class MultiSegmentTranslateTask {
                 continue;
             }
 
-            // Kiểm tra nếu text có chứa [] thì không cache
-            boolean shouldCache = !text.contains("[") || !text.contains("]");
-
             // Dịch theo từng dòng với API mới
             log(String.format("[%s] translate start by new api", cacheKey));
             String result = translateByLines(text, srcLang, tgtLang, cacheKey);
