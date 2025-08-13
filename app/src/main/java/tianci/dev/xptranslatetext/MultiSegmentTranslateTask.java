@@ -97,24 +97,30 @@ class MultiSegmentTranslateTask {
                 continue;
             }
 
-            // 查快取
+            // 查快取 (chỉ cache nếu text không chứa [])
             String cacheKey = srcLang + ":" + tgtLang + ":" + text;
             log(String.format("[%s] start translate", cacheKey));
 
-            log(String.format("[%s] checking cache", cacheKey));
-            if (translationCache.containsKey(cacheKey)) {
-                seg.translatedText = translationCache.get(cacheKey);
-                log(String.format("[%s] hit from cache", cacheKey));
-                continue;
-            }
+            boolean shouldCache = !text.contains("[") || !text.contains("]");
+            
+            if (shouldCache) {
+                log(String.format("[%s] checking cache", cacheKey));
+                if (translationCache.containsKey(cacheKey)) {
+                    seg.translatedText = translationCache.get(cacheKey);
+                    log(String.format("[%s] hit from cache", cacheKey));
+                    continue;
+                }
 
-            log(String.format("[%s] checking sqlite", cacheKey));
-            String dbResult = getTranslationFromDatabase(cacheKey);
-            if (dbResult != null) {
-                seg.translatedText = dbResult;
-                log(String.format("[%s] hit from sqlite => %s", cacheKey, dbResult));
-                translationCache.put(cacheKey, dbResult);
-                continue;
+                log(String.format("[%s] checking sqlite", cacheKey));
+                String dbResult = getTranslationFromDatabase(cacheKey);
+                if (dbResult != null) {
+                    seg.translatedText = dbResult;
+                    log(String.format("[%s] hit from sqlite => %s", cacheKey, dbResult));
+                    translationCache.put(cacheKey, dbResult);
+                    continue;
+                }
+            } else {
+                log(String.format("[%s] skip cache (contains [])", cacheKey));
             }
 
             if (!isTranslationNeeded(text)) {
@@ -122,6 +128,9 @@ class MultiSegmentTranslateTask {
                 log(String.format("[%s] not need translate", cacheKey));
                 continue;
             }
+
+            // Kiểm tra nếu text có chứa [] thì không cache
+            boolean shouldCache = !text.contains("[") || !text.contains("]");
 
             // Dịch theo từng dòng với API mới
             log(String.format("[%s] translate start by new api", cacheKey));
@@ -132,8 +141,10 @@ class MultiSegmentTranslateTask {
                 seg.translatedText = text; // 翻譯失敗 => 用原文
             } else {
                 seg.translatedText = result;
-                translationCache.put(cacheKey, result);
-                putTranslationToDatabase(cacheKey, result);
+                if (shouldCache) {
+                    translationCache.put(cacheKey, result);
+                    putTranslationToDatabase(cacheKey, result);
+                }
             }
         }
     }
@@ -316,8 +327,10 @@ class MultiSegmentTranslateTask {
         String cacheKey = srcLang + ":" + tgtLang + ":" + text;
         log(String.format("[%s] start translate", cacheKey));
 
-        // web translate don't cache it
+        // web translate: chỉ cache nếu không chứa []
+        boolean shouldCache = !text.contains("[") || !text.contains("]");
         String result = null;
+        
         log(String.format("[%s] translate start by new api", cacheKey));
         result = translateByLines(text, srcLang, tgtLang, cacheKey);
         log(String.format("[%s] translate end by new api => %s", cacheKey, result));
@@ -325,7 +338,9 @@ class MultiSegmentTranslateTask {
         if (result == null) {
             webView.post(() -> webView.evaluateJavascript(String.format("javascript:onXPTranslateCompleted(\'%s\',\'%s\')", requestId, text), null));
         } else {
-            translationCache.put(cacheKey, result);
+            if (shouldCache) {
+                translationCache.put(cacheKey, result);
+            }
             String finalResult = result;
             webView.post(() -> webView.evaluateJavascript(String.format("javascript:onXPTranslateCompleted(\'%s\',\'%s\')", requestId, finalResult), null));
         }
