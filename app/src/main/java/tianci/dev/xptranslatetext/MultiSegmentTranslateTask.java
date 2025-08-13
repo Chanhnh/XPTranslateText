@@ -106,7 +106,12 @@ class MultiSegmentTranslateTask {
                 seg.translatedText = text;
                 continue;
             }
-
+            try {
+                // ⏳ Delay 1 giây trước khi dịch
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             // 查快取 (chỉ cache nếu text không chứa [])
             String cacheKey = srcLang + ":" + tgtLang + ":" + text;
             log(String.format("[%s] start translate", cacheKey));
@@ -219,33 +224,6 @@ class MultiSegmentTranslateTask {
     }
 
     /**
-     * Bảo vệ icon trong một dòng
-     */
-    private static String protectIcons(String text, List<String> iconContents) {
-        Matcher m = Pattern.compile("\\[[^\\]]*]").matcher(text);
-        StringBuffer sb = new StringBuffer();
-        int idx = 0;
-        while (m.find()) {
-            iconContents.add(m.group());
-            m.appendReplacement(sb, "__ICON" + idx + "__");
-            idx++;
-        }
-        m.appendTail(sb);
-        return sb.toString();
-    }
-
-    /**
-     * Khôi phục icon trong một dòng đã dịch
-     */
-    private static String restoreIcons(String translatedText, List<String> iconContents) {
-        String result = translatedText;
-        for (int i = 0; i < iconContents.size(); i++) {
-            result = result.replace("__ICON" + i + "__", iconContents.get(i));
-        }
-        return result;
-    }
-
-    /**
      * Dịch đơn lẻ cho trường hợp 1 dòng (fallback)
      */
     private static String protectAndTranslate(String text, String src, String dst, String cacheKey) {
@@ -260,20 +238,6 @@ class MultiSegmentTranslateTask {
 
     private static String translateOnline(String text, String src, String dst, String cacheKey) {
             try {
-            // Tách số và chữ: ví dụ "302.5万" → ["302.5", "万"]
-            String numberPart = "";
-            String textPart = text;
-
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("^([0-9]+(?:\\.[0-9]+)?)(.*)$").matcher(text.trim());
-            if (m.find()) {
-            numberPart = m.group(1);  // phần số
-            textPart = m.group(2);    // phần chữ
-            }
-
-            // Nếu phần chữ rỗng => không cần dịch
-            if (textPart.isEmpty()) {
-                return text;
-            }
             URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
@@ -299,11 +263,7 @@ class MultiSegmentTranslateTask {
                 }
             }
 
-            //return parseResult(sb.toString(), cacheKey);
-            String translatedTextPart = parseResult(sb.toString(), cacheKey);
-
-        // Ghép lại: phần số + phần dịch
-            return numberPart + (translatedTextPart != null ? translatedTextPart : textPart);
+            return parseResult(sb.toString(), cacheKey);
         } catch (Exception e) {
             log(String.format("[%s] translate exception in new api => ", cacheKey) + e.getMessage());
             return null;
