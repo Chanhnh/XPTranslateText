@@ -14,12 +14,9 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -168,7 +165,7 @@ class MultiSegmentTranslateTask {
         // Kiểm tra xem có xuống dòng không
         if (!text.contains("\n") && !text.contains("\r")) {
             // Chỉ có 1 dòng, dịch bình thường
-            return protectAndTranslate(text, src, dst, cacheKey);
+            return translateOnline(text, src, dst, cacheKey);
         }
                 
         // Tách text thành từng dòng và giữ lại thông tin về ký tự xuống dòng
@@ -190,7 +187,7 @@ class MultiSegmentTranslateTask {
                 
         // Nếu sau khi split chỉ có 1 phần tử, dịch bình thường
         if (lines.length <= 1) {
-            return protectAndTranslate(text, src, dst, cacheKey);
+            return translateOnline(text, src, dst, cacheKey);
         }
                 
         log("translateByLines: splitting '" + text + "' into " + lines.length + " lines");
@@ -206,7 +203,7 @@ class MultiSegmentTranslateTask {
                 translatedLine = line;
             } else {
                 // Dịch dòng này
-                translatedLine = protectAndTranslate(line, src, dst, cacheKey);
+                translatedLine = translateOnline(line, src, dst, cacheKey);
                 if (translatedLine == null) {
                     translatedLine = line; // fallback
                 }
@@ -223,6 +220,7 @@ class MultiSegmentTranslateTask {
         return result.toString();
     }
 
+<<<<<<< HEAD
     /**
      * Dịch đơn lẻ cho trường hợp 1 dòng (fallback)
      */
@@ -236,6 +234,8 @@ class MultiSegmentTranslateTask {
         return restoreIcons(translated, bracketsContent);
     }
 
+=======
+>>>>>>> parent of 7f3d5ba (Revert "Update MultiSegmentTranslateTask.java")
     private static String translateOnline(String text, String src, String dst, String cacheKey) {
             try {
             URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
@@ -312,14 +312,6 @@ class MultiSegmentTranslateTask {
     }
 
     private static boolean isTranslationNeeded(String string) {
-        // Regex để nhận diện "emoji + [mô tả icon]" và bỏ qua dịch
-        Pattern onlyIconPattern = Pattern.compile("^\\p{So}*\\[[^\\]]*]$");
-        
-        // Nếu chỉ là emoji + [mô tả icon] thì không cần dịch
-        if (onlyIconPattern.matcher(string.trim()).matches()) {
-            return false;
-        }
-
         // 純數字
         if (string.matches("^\\d+$")) {
             return false;
