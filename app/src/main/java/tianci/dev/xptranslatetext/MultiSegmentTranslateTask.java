@@ -61,6 +61,13 @@ class MultiSegmentTranslateTask {
             final String tgtLang
     ) {
         TRANSLATION_EXECUTOR.submit(() -> {
+            try {
+            // ⏳ Delay 1 giây trước khi dịch
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
             doTranslateSegments(segments, srcLang, tgtLang);
 
             new Handler(Looper.getMainLooper()).post(() -> {
@@ -209,7 +216,21 @@ class MultiSegmentTranslateTask {
     }
 
     private static String translateOnline(String text, String src, String dst, String cacheKey) {
-        try {
+            try {
+            // Tách số và chữ: ví dụ "302.5万" → ["302.5", "万"]
+            String numberPart = "";
+            String textPart = text;
+
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("^([0-9]+(?:\\.[0-9]+)?)(.*)$").matcher(text.trim());
+            if (m.find()) {
+            numberPart = m.group(1);  // phần số
+            textPart = m.group(2);    // phần chữ
+            }
+
+            // Nếu phần chữ rỗng => không cần dịch
+            if (textPart.isEmpty()) {
+                return text;
+            }
             URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
@@ -235,7 +256,11 @@ class MultiSegmentTranslateTask {
                 }
             }
 
-            return parseResult(sb.toString(), cacheKey);
+            //return parseResult(sb.toString(), cacheKey);
+            String translatedTextPart = parseResult(sb.toString(), cacheKey);
+
+        // Ghép lại: phần số + phần dịch
+            return numberPart + (translatedTextPart != null ? translatedTextPart : textPart);
         } catch (Exception e) {
             log(String.format("[%s] translate exception in new api => ", cacheKey) + e.getMessage());
             return null;
