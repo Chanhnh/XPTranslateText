@@ -92,19 +92,10 @@ class MultiSegmentTranslateTask {
     }
 
     private static void doTranslateSegments(List<Segment> mSegments, String srcLang, String tgtLang) {
-        // Regex để nhận diện "emoji + [mô tả icon]" và bỏ qua dịch
-        Pattern onlyIconPattern = Pattern.compile("^\\p{So}*\\[[^\\]]*]$");
-
         // 逐段翻譯
         for (Segment seg : mSegments) {
             String text = seg.text;
             if (text.trim().isEmpty()) {
-                seg.translatedText = text;
-                continue;
-            }
-
-            // Nếu chỉ là emoji + [mô tả icon] thì giữ nguyên
-            if (onlyIconPattern.matcher(text.trim()).matches()) {
                 seg.translatedText = text;
                 continue;
             }
@@ -159,11 +150,11 @@ class MultiSegmentTranslateTask {
             // Chỉ có 1 dòng, dịch bình thường
             return protectAndTranslate(text, src, dst, cacheKey);
         }
-
+                
         // Tách text thành từng dòng và giữ lại thông tin về ký tự xuống dòng
         String[] lines;
         String lineBreakType = "\n"; // default
-
+                
         if (text.contains("\r\n")) {
             lines = text.split("\r\n", -1);
             lineBreakType = "\r\n";
@@ -176,20 +167,20 @@ class MultiSegmentTranslateTask {
         } else {
             lines = new String[]{text};
         }
-
+                
         // Nếu sau khi split chỉ có 1 phần tử, dịch bình thường
         if (lines.length <= 1) {
             return protectAndTranslate(text, src, dst, cacheKey);
         }
-
+                
         log("translateByLines: splitting '" + text + "' into " + lines.length + " lines");
-
+                
         // Dịch từng dòng riêng biệt
         StringBuilder result = new StringBuilder();
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
             String translatedLine;
-
+                        
             if (line.trim().isEmpty()) {
                 // Dòng trống giữ nguyên
                 translatedLine = line;
@@ -200,15 +191,15 @@ class MultiSegmentTranslateTask {
                     translatedLine = line; // fallback
                 }
             }
-
+                        
             result.append(translatedLine);
-
+                        
             // Thêm xuống dòng (trừ dòng cuối cùng)
             if (i < lines.length - 1) {
                 result.append(lineBreakType);
             }
         }
-
+                
         return result.toString();
     }
 
@@ -291,10 +282,10 @@ class MultiSegmentTranslateTask {
             JSONArray root = new JSONArray(json);
             JSONArray translatedArray = root.getJSONArray(0);
             String result = translatedArray.getString(0);
-
+                        
             // Decode HTML entities
             result = decodeHtmlEntities(result);
-
+                        
             return result;
         } catch (JSONException e) {
             log(String.format("[%s] parsing new api exception response => %s", cacheKey, e.getMessage()));
@@ -307,7 +298,7 @@ class MultiSegmentTranslateTask {
      */
     private static String decodeHtmlEntities(String text) {
         if (text == null) return null;
-
+                
         return text.replace("&quot;", "\"")
                   .replace("&amp;", "&")
                   .replace("&lt;", "<")
@@ -328,6 +319,14 @@ class MultiSegmentTranslateTask {
     }
 
     private static boolean isTranslationNeeded(String string) {
+        // Regex để nhận diện "emoji + [mô tả icon]" và bỏ qua dịch
+        Pattern onlyIconPattern = Pattern.compile("^\\p{So}*\\[[^\\]]*]$");
+        
+        // Nếu chỉ là emoji + [mô tả icon] thì không cần dịch
+        if (onlyIconPattern.matcher(string.trim()).matches()) {
+            return false;
+        }
+
         // 純數字
         if (string.matches("^\\d+$")) {
             return false;
