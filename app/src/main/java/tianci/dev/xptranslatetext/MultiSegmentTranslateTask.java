@@ -220,22 +220,6 @@ class MultiSegmentTranslateTask {
         return result.toString();
     }
 
-<<<<<<< HEAD
-    /**
-     * Dịch đơn lẻ cho trường hợp 1 dòng (fallback)
-     */
-    private static String protectAndTranslate(String text, String src, String dst, String cacheKey) {
-        List<String> bracketsContent = new ArrayList<>();
-        String protectedText = protectIcons(text, bracketsContent);
-
-        String translated = translateOnline(protectedText, src, dst, cacheKey);
-        if (translated == null) return null;
-
-        return restoreIcons(translated, bracketsContent);
-    }
-
-=======
->>>>>>> parent of 7f3d5ba (Revert "Update MultiSegmentTranslateTask.java")
     private static String translateOnline(String text, String src, String dst, String cacheKey) {
             try {
             URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
