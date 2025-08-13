@@ -14,12 +14,9 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -148,7 +145,7 @@ class MultiSegmentTranslateTask {
         // Kiểm tra xem có xuống dòng không
         if (!text.contains("\n") && !text.contains("\r")) {
             // Chỉ có 1 dòng, dịch bình thường
-            return protectAndTranslate(text, src, dst, cacheKey);
+            return translateOnline(text, src, dst, cacheKey);
         }
                 
         // Tách text thành từng dòng và giữ lại thông tin về ký tự xuống dòng
@@ -170,7 +167,7 @@ class MultiSegmentTranslateTask {
                 
         // Nếu sau khi split chỉ có 1 phần tử, dịch bình thường
         if (lines.length <= 1) {
-            return protectAndTranslate(text, src, dst, cacheKey);
+            return translateOnline(text, src, dst, cacheKey);
         }
                 
         log("translateByLines: splitting '" + text + "' into " + lines.length + " lines");
@@ -186,7 +183,7 @@ class MultiSegmentTranslateTask {
                 translatedLine = line;
             } else {
                 // Dịch dòng này
-                translatedLine = protectAndTranslate(line, src, dst, cacheKey);
+                translatedLine = translateOnline(line, src, dst, cacheKey);
                 if (translatedLine == null) {
                     translatedLine = line; // fallback
                 }
@@ -201,46 +198,6 @@ class MultiSegmentTranslateTask {
         }
                 
         return result.toString();
-    }
-
-    /**
-     * Bảo vệ icon trong một dòng
-     */
-    private static String protectIcons(String text, List<String> iconContents) {
-        Matcher m = Pattern.compile("\\[[^\\]]*]").matcher(text);
-        StringBuffer sb = new StringBuffer();
-        int idx = 0;
-        while (m.find()) {
-            iconContents.add(m.group());
-            m.appendReplacement(sb, "__ICON" + idx + "__");
-            idx++;
-        }
-        m.appendTail(sb);
-        return sb.toString();
-    }
-
-    /**
-     * Khôi phục icon trong một dòng đã dịch
-     */
-    private static String restoreIcons(String translatedText, List<String> iconContents) {
-        String result = translatedText;
-        for (int i = 0; i < iconContents.size(); i++) {
-            result = result.replace("__ICON" + i + "__", iconContents.get(i));
-        }
-        return result;
-    }
-
-    /**
-     * Dịch đơn lẻ cho trường hợp 1 dòng (fallback)
-     */
-    private static String protectAndTranslate(String text, String src, String dst, String cacheKey) {
-        List<String> bracketsContent = new ArrayList<>();
-        String protectedText = protectIcons(text, bracketsContent);
-
-        String translated = translateOnline(protectedText, src, dst, cacheKey);
-        if (translated == null) return null;
-
-        return restoreIcons(translated, bracketsContent);
     }
 
     private static String translateOnline(String text, String src, String dst, String cacheKey) {
@@ -319,14 +276,6 @@ class MultiSegmentTranslateTask {
     }
 
     private static boolean isTranslationNeeded(String string) {
-        // Regex để nhận diện "emoji + [mô tả icon]" và bỏ qua dịch
-        Pattern onlyIconPattern = Pattern.compile("^\\p{So}*\\[[^\\]]*]$");
-        
-        // Nếu chỉ là emoji + [mô tả icon] thì không cần dịch
-        if (onlyIconPattern.matcher(string.trim()).matches()) {
-            return false;
-        }
-
         // 純數字
         if (string.matches("^\\d+$")) {
             return false;
