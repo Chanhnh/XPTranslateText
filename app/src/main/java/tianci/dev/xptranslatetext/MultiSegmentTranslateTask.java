@@ -190,6 +190,8 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json+protobuf");
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            conn.setConnectTimeout(3000);
+            conn.setReadTimeout(3000);
             conn.setDoOutput(true);
 
             String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"te\"]";
