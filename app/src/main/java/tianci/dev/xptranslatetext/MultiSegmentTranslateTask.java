@@ -56,9 +56,14 @@ class MultiSegmentTranslateTask {
             final String tgtLang
     ) {
         TRANSLATION_EXECUTOR.submit(() -> {
-            doTranslateSegments(segments, srcLang, tgtLang);
+    try {
+        // Delay 200ms để app kịp decode [] -> emoji
+        Thread.sleep(200);
+    } catch (InterruptedException ignored) {}
 
-            new Handler(Looper.getMainLooper()).post(() -> {
+    doTranslateSegments(segments, srcLang, tgtLang);
+
+    new Handler(Looper.getMainLooper()).post(() -> {
                 // 確認 TextView 的 Tag 是否還是同一個 translationId
                 Method setTagMethod = XposedHelpers.findMethodExactIfExists(param.thisObject.getClass(), "getTag", Object.class);
                 if (setTagMethod != null) {
