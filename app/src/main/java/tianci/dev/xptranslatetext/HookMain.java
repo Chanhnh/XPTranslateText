@@ -1,5 +1,6 @@
 package tianci.dev.xptranslatetext;
 
+import android.content.Context;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.widget.TextView;
