@@ -296,10 +296,7 @@ class MultiSegmentTranslateTask {
                   .replace("&gt;", ">")
                   .replace("&apos;", "'")
                   .replace("&#39;", "'")
-                  .replace("&nbsp;", " ")
-                  // Decode numeric entities
-                  .replaceAll("&#(\\d+);", "")  // Remove numeric entities for now
-                  .replaceAll("&#x([0-9A-Fa-f]+);", ""); // Remove hex entities for now
+                  .replace("&nbsp;", " "); // Remove hex entities for now
     }
 
     private static String escapeJson(String s) {
