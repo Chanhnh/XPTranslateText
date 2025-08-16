@@ -1,8 +1,5 @@
 package tianci.dev.xptranslatetext;
 
-import android.app.Activity;
-import android.content.Context;
-import android.os.Bundle;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.widget.TextView;
@@ -62,23 +59,6 @@ public class HookMain implements IXposedHookLoadPackage {
         hookAllCustomSetTextClasss(lpparam, finalSourceLang, finalTargetLang);
         hookTextView(lpparam, finalSourceLang, finalTargetLang);
         hookWebView(lpparam, finalSourceLang, finalTargetLang);
-
-        XposedHelpers.findAndHookMethod(
-                "android.app.Activity",
-                lpparam.classLoader,
-                "onCreate",
-                Bundle.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        Activity activity = (Activity) param.thisObject;
-                        Context context = activity.getApplicationContext();
-
-                        XposedBridge.log("Context: " + context.getPackageName());
-                        MultiSegmentTranslateTask.initDatabaseHelper(context);
-                    }
-                }
-        );
     }
 
     private void hookWebView(XC_LoadPackage.LoadPackageParam lpparam, String finalSourceLang, String finalTargetLang) {

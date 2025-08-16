@@ -1,6 +1,5 @@
 package tianci.dev.xptranslatetext;
 
-import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.webkit.WebView;
@@ -42,13 +41,6 @@ class MultiSegmentTranslateTask {
 
     // 簡易翻譯快取: (srcLang + tgtLang + text) -> translated
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
-    private static TranslationDatabaseHelper dbHelper;
-
-    public static void initDatabaseHelper(Context context) {
-        if (dbHelper == null) {
-            dbHelper = new TranslationDatabaseHelper(context.getApplicationContext());
-        }
-    }
 
     private static void log(String msg) {
         if (DEBUG) {
@@ -120,15 +112,6 @@ class MultiSegmentTranslateTask {
                 continue;
             }
 
-            log(String.format("[%s] checking sqlite", cacheKey));
-            String dbResult = getTranslationFromDatabase(cacheKey);
-            if (dbResult != null) {
-                seg.translatedText = dbResult;
-                log(String.format("[%s] hit from sqlite => %s", cacheKey, dbResult));
-                translationCache.put(cacheKey, dbResult);
-                continue;
-            }
-
             if (!isTranslationNeeded(text)) {
                 seg.translatedText = text;
                 log(String.format("[%s] not need translate", cacheKey));
@@ -145,7 +128,6 @@ class MultiSegmentTranslateTask {
             } else {
                 seg.translatedText = result;
                 translationCache.put(cacheKey, result);
-                putTranslationToDatabase(cacheKey, result);
             }
         }
     }
@@ -339,29 +321,6 @@ class MultiSegmentTranslateTask {
         }
 
         return true;
-    }
-
-    private static String getTranslationFromDatabase(String cacheKey) {
-        if (dbHelper == null) return null;
-        try {
-            return DB_EXECUTOR.submit(() -> dbHelper.getTranslation(cacheKey))
-                    .get(1, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (Exception e) {
-            log("DB fetch error: " + e);
-            return null;
-        }
-    }
-
-    private static void putTranslationToDatabase(String cacheKey, String translatedText) {
-        if (dbHelper == null) return;
-        try {
-            DB_EXECUTOR.submit(() -> {
-                dbHelper.putTranslation(cacheKey, translatedText);
-                return null;
-            }).get(1, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (Exception e) {
-            log("DB put error: " + e);
-        }
     }
 
     public static void translateFromJs(WebView webView, String requestId, String text, String srcLang, String tgtLang) {
