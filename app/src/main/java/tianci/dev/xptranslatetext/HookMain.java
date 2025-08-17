@@ -36,7 +36,7 @@ public class HookMain implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) {
                         CharSequence originalText = (CharSequence) param.args[0];
 
-                        if (originalText == null || originalText.length() == 0 || !isTranslationNeeded(originalText.toString())) {
+                        if (originalText == null || originalText.length() == 0 {
                             return;
                         }
 
@@ -64,34 +64,16 @@ public class HookMain implements IXposedHookLoadPackage {
                         }
 
                         // 非同步翻譯
-                        new MultiSegmentTranslateTask(param, translationId, segments)
-                                .executeOnExecutor(MultiSegmentTranslateTask.CUSTOM_EXECUTOR, "zh-CN", "vi");
-
+                        MultiSegmentTranslateTask.translateSegmentsAsync(
+                                param,
+                                translationId,
+                                segments,
+                                finalSourceLang,
+                                finalTargetLang
+                        );
                     }
                 }
         );
-    }
-
-    private boolean isTranslationSkippedForClass(String className) {
-        if (className.startsWith("org.telegram.ui.ActionBar.AlertDialog")) {
-            return true;
-        }
-
-        return false;
-    }
-
-    private boolean isTranslationNeeded(String string) {
-        // 純數字
-        if (string.matches("^\\d+$")) {
-            return false;
-        }
-
-        // 座標
-        if (string.matches("^\\d{1,3}\\.\\d+$")) {
-            return false;
-        }
-
-        return true;
     }
 
     public static void applyTranslatedSegments(XC_MethodHook.MethodHookParam param,

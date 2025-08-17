@@ -1,5 +1,7 @@
 package tianci.dev.xptranslatetext;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -12,6 +14,8 @@ import java.net.URL;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.ArrayList;
@@ -19,7 +23,7 @@ import java.util.ArrayList;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 
-class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boolean> {
+class MultiSegmentTranslateTask {
 
     private static final String TRANSLATE_URL = "https://translate-pa.googleapis.com/v1/translateHtml";
     private static final String API_KEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
@@ -27,8 +31,11 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
     // Cache: (srcLang + tgtLang + text) -> translated
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
 
-    public static final java.util.concurrent.Executor CUSTOM_EXECUTOR =
-            java.util.concurrent.Executors.newFixedThreadPool(8);
+    // Shared ExecutorService for all translation tasks
+    public static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(8);
+
+    // Handler for UI thread operations
+    private static final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final XC_MethodHook.MethodHookParam mParam;
     private final int mTranslationId;
@@ -42,11 +49,23 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         this.mSegments = segments;
     }
 
-    @Override
-    protected Boolean doInBackground(String... params) {
-        if (params.length < 2) return false;
-        String srcLang = params[0];
-        String tgtLang = params[1];
+    /**
+     * Execute translation task
+     */
+    public void execute(String srcLang, String tgtLang) {
+        EXECUTOR.submit(() -> {
+            boolean success = performTranslation(srcLang, tgtLang);
+
+            // Post result to UI thread
+            mainHandler.post(() -> onTranslationComplete(success));
+        });
+    }
+
+    /**
+     * Perform translation in background thread
+     */
+    private boolean performTranslation(String srcLang, String tgtLang) {
+        if (srcLang == null || tgtLang == null) return false;
 
         // Regex để nhận diện "emoji + [mô tả icon]" và bỏ qua dịch
         Pattern onlyIconPattern = Pattern.compile("^\\p{So}*\\[[^\\]]*]$");
@@ -83,6 +102,30 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
     }
 
     /**
+     * Handle completion on UI thread
+     */
+    private void onTranslationComplete(boolean success) {
+        if (!success) {
+            XposedBridge.log("MultiSegmentTranslateTask => failed.");
+            return;
+        }
+
+        TextView tv = (TextView) mParam.thisObject;
+        Object tagObj = tv.getTag();
+        if (!(tagObj instanceof Integer)) {
+            XposedBridge.log("Tag mismatch => skip.");
+            return;
+        }
+        int currentTag = (Integer) tagObj;
+        if (currentTag == mTranslationId) {
+            HookMain.applyTranslatedSegments(mParam, mSegments);
+        } else {
+            XposedBridge.log("MultiSegmentTranslateTask => expired. currentTag=" + currentTag
+                    + ", myId=" + mTranslationId);
+        }
+    }
+
+    /**
      * Dịch từng dòng riêng biệt để bảo toàn format
      */
     private String translateByLines(String text, String src, String dst) {
@@ -91,11 +134,11 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             // Chỉ có 1 dòng, dịch bình thường
             return protectAndTranslate(text, src, dst);
         }
-        
+
         // Tách text thành từng dòng và giữ lại thông tin về ký tự xuống dòng
         String[] lines;
         String lineBreakType = "\n"; // default
-        
+
         if (text.contains("\r\n")) {
             lines = text.split("\r\n", -1);
             lineBreakType = "\r\n";
@@ -108,20 +151,20 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         } else {
             lines = new String[]{text};
         }
-        
+
         // Nếu sau khi split chỉ có 1 phần tử, dịch bình thường
         if (lines.length <= 1) {
             return protectAndTranslate(text, src, dst);
         }
-        
+
         XposedBridge.log("translateByLines: splitting '" + text + "' into " + lines.length + " lines");
-        
+
         // Dịch từng dòng riêng biệt
         StringBuilder result = new StringBuilder();
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
             String translatedLine;
-            
+
             if (line.trim().isEmpty()) {
                 // Dòng trống giữ nguyên
                 translatedLine = line;
@@ -132,15 +175,15 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
                     translatedLine = line; // fallback
                 }
             }
-            
+
             result.append(translatedLine);
-            
+
             // Thêm xuống dòng (trừ dòng cuối cùng)
             if (i < lines.length - 1) {
                 result.append(lineBreakType);
             }
         }
-        
+
         return result.toString();
     }
 
@@ -170,8 +213,6 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         }
         return result;
     }
-
-
 
     /**
      * Dịch đơn lẻ cho trường hợp 1 dòng (fallback)
@@ -222,10 +263,10 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             JSONArray root = new JSONArray(json);
             JSONArray translatedArray = root.getJSONArray(0);
             String result = translatedArray.getString(0);
-            
+
             // Decode HTML entities
             result = decodeHtmlEntities(result);
-            
+
             return result;
         } catch (JSONException e) {
             XposedBridge.log("Error parsing translation result => " + e.getMessage());
@@ -238,7 +279,7 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
      */
     private String decodeHtmlEntities(String text) {
         if (text == null) return null;
-        
+
         return text.replace("&quot;", "\"")
                    .replace("&amp;", "&")
                    .replace("&lt;", "<")
@@ -258,25 +299,12 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
                 .replace("\r", "\\r");
     }
 
-    @Override
-    protected void onPostExecute(Boolean success) {
-        if (!success) {
-            XposedBridge.log("MultiSegmentTranslateTask => failed.");
-            return;
-        }
-
-        TextView tv = (TextView) mParam.thisObject;
-        Object tagObj = tv.getTag();
-        if (!(tagObj instanceof Integer)) {
-            XposedBridge.log("Tag mismatch => skip.");
-            return;
-        }
-        int currentTag = (Integer) tagObj;
-        if (currentTag == mTranslationId) {
-            HookMain.applyTranslatedSegments(mParam, mSegments);
-        } else {
-            XposedBridge.log("MultiSegmentTranslateTask => expired. currentTag=" + currentTag
-                    + ", myId=" + mTranslationId);
+    /**
+     * Shutdown ExecutorService gracefully
+     */
+    public static void shutdown() {
+        if (EXECUTOR != null && !EXECUTOR.isShutdown()) {
+            EXECUTOR.shutdown();
         }
     }
 }
