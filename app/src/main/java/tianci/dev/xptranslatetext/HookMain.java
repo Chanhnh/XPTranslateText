@@ -36,7 +36,7 @@ public class HookMain implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) {
                         CharSequence originalText = (CharSequence) param.args[0];
 
-                        if (originalText == null || originalText.length() == 0 {
+                        if (originalText == null || originalText.length() == 0) {
                             return;
                         }
 
