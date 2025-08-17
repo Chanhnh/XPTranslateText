@@ -65,7 +65,8 @@ public class HookMain implements IXposedHookLoadPackage {
 
                         // 非同步翻譯
                         new MultiSegmentTranslateTask(param, translationId, segments)
-                                .executeOnExecutor(android.os.AsyncTask.THREAD_POOL_EXECUTOR, "auto", "vi");
+                                .executeOnExecutor(MultiSegmentTranslateTask.CUSTOM_EXECUTOR, "zh-CN", "vi");
+
                     }
                 }
         );

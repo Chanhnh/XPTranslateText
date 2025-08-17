@@ -27,6 +27,9 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
     // Cache: (srcLang + tgtLang + text) -> translated
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
 
+    public static final java.util.concurrent.Executor CUSTOM_EXECUTOR =
+            java.util.concurrent.Executors.newFixedThreadPool(8);
+
     private final XC_MethodHook.MethodHookParam mParam;
     private final int mTranslationId;
     private final List<Segment> mSegments;
@@ -190,8 +193,6 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json+protobuf");
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
-            conn.setRequestProperty("Connection", "Keep-Alive");
-            conn.setRequestProperty("Keep-Alive", "timeout=30, max=1000");
             conn.setDoOutput(true);
 
             String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"te\"]";
