@@ -43,10 +43,6 @@ public class HookMain implements IXposedHookLoadPackage {
                         XposedBridge.log("Original String => " + originalText);
                         //XposedBridge.log("TextView Class => " + param.thisObject.getClass().getName());
 
-                        if (isTranslationSkippedForClass(param.thisObject.getClass().getName())) {
-                            return;
-                        }
-
                         int translationId = atomicIdGenerator.getAndIncrement();
 
                         // 把翻譯ID存在 TextView 裏
@@ -64,7 +60,7 @@ public class HookMain implements IXposedHookLoadPackage {
                         }
 
                         // 非同步翻譯
-                        MultiSegmentTranslateTask task = new MultiSegmentTranslateTask(param, id, segments);
+                        MultiSegmentTranslateTask task = new MultiSegmentTranslateTask(param, translationId, segments);
                             task.execute("zh-CN", "vi");
                     }
                 }
