@@ -4,7 +4,7 @@
         android:key="source_lang"
         android:title="Source Language"
         android:summary="Enter source language code (e.g., en, ja, ko)"
-        android:defaultValue="en"
+        android:defaultValue="auto"
         android:dialogTitle="Set Source Language"
         android:singleLine="true" />
 
@@ -12,7 +12,7 @@
         android:key="target_lang"
         android:title="Target Language"
         android:summary="Enter target language code (e.g., zh-TW, zh-CN, ja)"
-        android:defaultValue="zh-TW"
+        android:defaultValue="vi"
         android:dialogTitle="Set Target Language"
         android:singleLine="true" />
 </PreferenceScreen>
