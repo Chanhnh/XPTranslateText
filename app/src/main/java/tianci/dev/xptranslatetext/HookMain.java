@@ -64,13 +64,8 @@ public class HookMain implements IXposedHookLoadPackage {
                         }
 
                         // 非同步翻譯
-                        MultiSegmentTranslateTask.translateSegmentsAsync(
-                                param,
-                                translationId,
-                                segments,
-                                finalSourceLang,
-                                finalTargetLang
-                        );
+                        MultiSegmentTranslateTask task = new MultiSegmentTranslateTask(param, id, segments);
+                            task.execute("zh-CN", "vi");
                     }
                 }
         );
