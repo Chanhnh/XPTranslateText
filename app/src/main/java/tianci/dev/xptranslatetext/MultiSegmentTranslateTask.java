@@ -6,40 +6,33 @@ import android.widget.TextView;
 
 import org.json.JSONArray;
 import org.json.JSONException;
-import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLEncoder;
-
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * 用來翻譯多個 Segment
  */
 class MultiSegmentTranslateTask {
-
     private static final ExecutorService TRANSLATION_EXECUTOR = Executors.newFixedThreadPool(20);
+
+    // API duy nhất
+    private static final String TRANSLATE_URL = "https://translate-pa.googleapis.com/v1/translateHtml";
+    private static final String API_KEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
 
     // 簡易翻譯快取: (srcLang + tgtLang + text) -> translated
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
-
-    private static final String[] GEMINI_API_KEYS = {
-
-    };
-    private static final long[] geminiKeyBlockUntil = new long[GEMINI_API_KEYS.length];
-    private static int geminiKeyIndex = 0;
 
     public static void translateSegmentsAsync(
             final XC_MethodHook.MethodHookParam param,
@@ -49,9 +42,7 @@ class MultiSegmentTranslateTask {
             final String tgtLang
     ) {
         TRANSLATION_EXECUTOR.submit(() -> {
-
             doTranslateSegments(segments, srcLang, tgtLang);
-
             new Handler(Looper.getMainLooper()).post(() -> {
                 // 確認 TextView 的 Tag 是否還是同一個 translationId
                 TextView tv = (TextView) param.thisObject;
@@ -62,7 +53,7 @@ class MultiSegmentTranslateTask {
                 }
                 int currentTag = (Integer) tagObj;
                 if (currentTag == translationId) {
-                    // 還是同一個 => 套用翻譯後結果
+                    // 套用翻譯後結果
                     HookMain.applyTranslatedSegments(param, segments);
                 } else {
                     XposedBridge.log("MultiSegmentTranslateTask => expired. currentTag=" + currentTag
@@ -72,40 +63,49 @@ class MultiSegmentTranslateTask {
         });
     }
 
-
     private static void doTranslateSegments(List<Segment> mSegments, String srcLang, String tgtLang) {
         // 逐段翻譯
         for (Segment seg : mSegments) {
-            String txt = seg.text;
-            if (txt.trim().isEmpty()) {
-                seg.translatedText = txt;
+            String text = seg.text;
+
+            if (text == null || text.trim().isEmpty()) {
+                seg.translatedText = text;
                 continue;
             }
 
-            // 查快取
-            String cacheKey = srcLang + ":" + tgtLang + ":" + txt;
+            // ❌ Không dịch text dạng [ ... ]
+            if (text.matches("^\\[.*]$")) {
+                seg.translatedText = text;
+                continue;
+            }
+
+            // ⚡ Nếu text bắt đầu bằng @ → chỉ dịch phần sau @ và trả về kèm '@'
+            if (text.startsWith("@")) {
+                String raw = text.substring(1);
+                String cacheKey = srcLang + ":" + tgtLang + ":" + raw;
+                String translated = translateByLines(raw, srcLang, tgtLang, cacheKey);
+                seg.translatedText = (translated == null) ? text : ("@" + translated);
+                if (translated != null) translationCache.put(cacheKey, translated);
+                continue;
+            }
+
+            // 🔍 Cache bình thường
+            String cacheKey = srcLang + ":" + tgtLang + ":" + text;
             if (translationCache.containsKey(cacheKey)) {
                 seg.translatedText = translationCache.get(cacheKey);
                 continue;
             }
 
-            if (!isTranslationNeeded(txt)) {
-                seg.translatedText = txt;
+            // ⛔ Bỏ qua số/toạ độ
+            if (!isTranslationNeeded(text)) {
+                seg.translatedText = text;
                 continue;
             }
 
-            String result = null;
-            if (GEMINI_API_KEYS.length > 0) {
-                result = translateByGemini(txt, tgtLang);
-            }
-
-            // When free Gemini got 429 failed
+            // 🌐 Dịch bình thường (giữ định dạng theo dòng)
+            String result = translateByLines(text, srcLang, tgtLang, cacheKey);
             if (result == null) {
-                result = translateByGoogleFreeApi(txt, srcLang, tgtLang);
-            }
-
-            if (result == null) {
-                seg.translatedText = txt; // 翻譯失敗 => 用原文
+                seg.translatedText = text; // fallback giữ nguyên
             } else {
                 seg.translatedText = result;
                 translationCache.put(cacheKey, result);
@@ -113,173 +113,115 @@ class MultiSegmentTranslateTask {
         }
     }
 
-    private static String translateByGemini(String text, String dst) {
-        long now = System.currentTimeMillis();
-
-        int triedCount = 0;
-
-        while (triedCount < GEMINI_API_KEYS.length) {
-            int usableIndex = findNextUsableKey(now);
-            if (usableIndex < 0) {
-                return null;
-            }
-
-            String currentKey = GEMINI_API_KEYS[usableIndex];
-
-            try {
-                String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=" + currentKey;
-
-                URL url = new URL(endpoint);
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setDoOutput(true);
-
-                String requestBody = String.format("{\"contents\": [{\"role\": \"user\",\"parts\": [{\"text\": \"%s\"}]}],\"systemInstruction\": {\"role\": \"user\",\"parts\": [{\"text\": \"- Please translate the following content into \\\"%s\\\" only, without any additional explanations or descriptions.\"}]},\"generationConfig\": {\"temperature\": 1,\"topK\": 40,\"topP\": 0.95,\"maxOutputTokens\": 8192,\"responseMimeType\": \"text/plain\"}}", text, dst);
-
-                try (OutputStream os = conn.getOutputStream()) {
-                    byte[] input = requestBody.getBytes("UTF-8");
-                    os.write(input, 0, input.length);
-                    os.flush();
-                }
-
-                int status = conn.getResponseCode();
-                if (status != 200) {
-                    if (status == 429) {
-                        // 遇到 Rate Limit => 此 key 冷卻 1 分鐘
-                        geminiKeyBlockUntil[usableIndex] = now + 60_000;
-                        XposedBridge.log("Gemini2.0 => 429: Key index " + usableIndex
-                                + " is blocked until " + geminiKeyBlockUntil[usableIndex]);
-
-                        // 換下一組 key 繼續嘗試
-                        triedCount++;
-                        continue;
-                    }
-
-                    XposedBridge.log("Gemini2.0: Non-200 code => " + status);
-                    try (BufferedReader errIn = new BufferedReader(new InputStreamReader(conn.getErrorStream(), "UTF-8"))) {
-                        StringBuilder errSb = new StringBuilder();
-                        String eLine;
-                        while ((eLine = errIn.readLine()) != null) {
-                            errSb.append(eLine);
-                        }
-                        XposedBridge.log("Gemini2.0 error => " + errSb);
-                    }
-                    return null;
-                }
-
-                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = in.readLine()) != null) {
-                        sb.append(line);
-                    }
-                    return parseGeminiResult(sb.toString());
-                }
-            } catch (Exception e) {
-                XposedBridge.log("Error in translateOnline => " + e.getMessage());
-                return null;
-            }
+    /** Dịch từng dòng riêng biệt để bảo toàn format xuống dòng */
+    private static String translateByLines(String text, String src, String dst, String cacheKey) {
+        // Nếu không có xuống dòng → dịch một phát
+        if (!text.contains("\n") && !text.contains("\r")) {
+            return translateOnline(text, src, dst, cacheKey);
         }
-        return null;
+
+        String[] lines;
+        String lineBreakType = "\n";
+        if (text.contains("\r\n")) {
+            lines = text.split("\r\n", -1);
+            lineBreakType = "\r\n";
+        } else if (text.contains("\n")) {
+            lines = text.split("\n", -1);
+            lineBreakType = "\n";
+        } else { // chỉ \r
+            lines = text.split("\r", -1);
+            lineBreakType = "\r";
+        }
+
+        StringBuilder result = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            String translatedLine;
+            if (line.trim().isEmpty()) {
+                translatedLine = line; // giữ nguyên dòng trống
+            } else {
+                translatedLine = translateOnline(line, src, dst, cacheKey);
+                if (translatedLine == null) translatedLine = line; // fallback
+            }
+            result.append(translatedLine);
+            if (i < lines.length - 1) result.append(lineBreakType);
+        }
+        return result.toString();
     }
 
-    private static String translateByGoogleFreeApi(String text, String src, String dst) {
+    /** Gọi API translate-pa (chỉ 1 API duy nhất) */
+    private static String translateOnline(String text, String src, String dst, String cacheKey) {
         try {
-            String urlStr = "https://translate.googleapis.com/translate_a/single"
-                    + "?client=gtx"
-                    + "&sl=" + URLEncoder.encode(src, "UTF-8")
-                    + "&tl=" + URLEncoder.encode(dst, "UTF-8")
-                    + "&dt=t"
-                    + "&q=" + URLEncoder.encode(text, "UTF-8");
-
-            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-            conn.setRequestMethod("GET");
+            URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json+protobuf");
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            conn.setDoOutput(true);
 
-            BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            // Payload kiểu: [[["text"],"src","dst"],"te"]
+            String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"te\"]";
+
+            try (OutputStream os = conn.getOutputStream()) {
+                byte[] input = payload.getBytes("UTF-8");
+                os.write(input, 0, input.length);
+                os.flush();
+            }
+
             StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = in.readLine()) != null) {
-                sb.append(line);
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
+                String line;
+                while ((line = in.readLine()) != null) sb.append(line);
             }
-            in.close();
 
-            return parseGoogleFreeApiResult(sb.toString());
+            return parseResult(sb.toString());
         } catch (Exception e) {
-            XposedBridge.log("Error in translateOnline => " + e.getMessage());
+            XposedBridge.log("[" + cacheKey + "] translate exception => " + e.getMessage());
             return null;
         }
     }
 
-    private static String parseGoogleFreeApiResult(String json) {
+    /** Parse kết quả từ API mới */
+    private static String parseResult(String json) {
         try {
-            JSONArray jsonArray = new JSONArray(json);
-            JSONArray translations = jsonArray.getJSONArray(0);
-            StringBuilder translatedText = new StringBuilder();
-            for (int i = 0; i < translations.length(); i++) {
-                JSONArray arr = translations.getJSONArray(i);
-                translatedText.append(arr.getString(0));
-            }
-            return translatedText.toString();
+            JSONArray root = new JSONArray(json);
+            JSONArray translatedArray = root.getJSONArray(0);
+            String result = translatedArray.getString(0);
+            return decodeHtmlEntities(result);
         } catch (JSONException e) {
-            XposedBridge.log("Error parsing translation result => " + e.getMessage());
+            XposedBridge.log("parseResult error => " + e.getMessage());
             return null;
         }
     }
 
-    private static String parseGeminiResult(String json) {
-        try {
-            // 使用 org.json
-            JSONObject root = new JSONObject(json);
-            JSONArray candidates = root.optJSONArray("candidates");
-            if (candidates == null || candidates.length() == 0) {
-                return null;
-            }
-
-            JSONObject firstCandidate = candidates.getJSONObject(0);
-            JSONObject content = firstCandidate.optJSONObject("content");
-            if (content == null) return null;
-
-            JSONArray parts = content.optJSONArray("parts");
-            if (parts == null || parts.length() == 0) {
-                return null;
-            }
-
-            JSONObject firstPart = parts.getJSONObject(0);
-            String text = firstPart.optString("text", null);
-            if (text == null) return null;
-
-            XposedBridge.log("Gemini Response " + text.trim());
-            return text.trim();
-        } catch (JSONException e) {
-            XposedBridge.log("Error parsing Gemini2.0 response => " + e.getMessage());
-            return null;
-        }
+    /** Decode HTML entities trong kết quả dịch */
+    private static String decodeHtmlEntities(String text) {
+        if (text == null) return null;
+        return text.replace("&quot;", "\"")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&apos;", "'")
+                .replace("&#39;", "'")
+                .replace("&nbsp;", " ");
     }
 
-    private static int findNextUsableKey(long now) {
-        for (int i = 0; i < GEMINI_API_KEYS.length; i++) {
-            int idx = (geminiKeyIndex + i) % GEMINI_API_KEYS.length;
-            if (now >= geminiKeyBlockUntil[idx]) {
-                geminiKeyIndex = (idx + 1) % GEMINI_API_KEYS.length;
-                return idx;
-            }
-        }
-        return -1;
+    /** Escape chuỗi cho JSON payload */
+    private static String escapeJson(String s) {
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r");
     }
 
+    /** Quy tắc bỏ qua dịch cho số/ toạ độ */
     private static boolean isTranslationNeeded(String string) {
-        // 純數字
-        if (string.matches("^\\d+$")) {
+        if (string.matches("^\\d+$")) { // chỉ số
             return false;
         }
-
-        // 座標
-        if (string.matches("^\\d{1,3}\\.\\d+$")) {
+        if (string.matches("^\\d{1,3}\\.\\d+$")) { // toạ độ kiểu 12.34
             return false;
         }
-
         return true;
     }
 }
