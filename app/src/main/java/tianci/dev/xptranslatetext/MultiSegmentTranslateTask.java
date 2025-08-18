@@ -216,6 +216,13 @@ class MultiSegmentTranslateTask {
         if (string.matches("^\\[.*]$")) {
             return false;
         }
+        // Thủ công: 万 -> vạn, 亿 -> tỷ
+        if (text.matches("^[0-9.]+万$")) {
+            return text.replaceAll("万$", " vạn");
+        }
+        if (text.matches("^[0-9.]+亿$")) {
+            return text.replaceAll("亿$", " tỷ");
+        }
         return true;
     }
 }
