@@ -73,12 +73,6 @@ class MultiSegmentTranslateTask {
                 continue;
             }
 
-            // ❌ Không dịch text dạng [ ... ]
-            if (text.matches("^\\[.*]$")) {
-                seg.translatedText = text;
-                continue;
-            }
-
             // ⚡ Nếu text bắt đầu bằng @ → chỉ dịch phần sau @ và trả về kèm '@'
             if (text.startsWith("@")) {
                 String raw = text.substring(1);
@@ -96,7 +90,7 @@ class MultiSegmentTranslateTask {
                 continue;
             }
 
-            // ⛔ Bỏ qua số/toạ độ
+            // ⛔ Bỏ qua dịch
             if (!isTranslationNeeded(text)) {
                 seg.translatedText = text;
                 continue;
@@ -214,12 +208,12 @@ class MultiSegmentTranslateTask {
                 .replace("\r", "\\r");
     }
 
-    /** Quy tắc bỏ qua dịch cho số/ toạ độ */
+    /** Quy tắc bỏ qua dịch */
     private static boolean isTranslationNeeded(String string) {
-        if (string.matches("^\\d+$")) { // chỉ số
+        if (string.matches("^\\d+([.:\\-]\\d+)*$")) {
             return false;
         }
-        if (string.matches("^\\d{1,3}\\.\\d+$")) { // toạ độ kiểu 12.34
+        if (string.matches("^\\[.*]$")) {
             return false;
         }
         return true;
