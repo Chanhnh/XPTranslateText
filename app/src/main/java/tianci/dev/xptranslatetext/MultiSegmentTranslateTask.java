@@ -90,6 +90,13 @@ class MultiSegmentTranslateTask {
                 continue;
             }
 
+            // Dịch thủ công
+            String manual = applyManualTranslation(text);
+            if (manual != null) {
+                seg.translatedText = manual;
+                continue;
+            }
+
             // ⛔ Bỏ qua dịch
             if (!isTranslationNeeded(text)) {
                 seg.translatedText = text;
@@ -216,13 +223,16 @@ class MultiSegmentTranslateTask {
         if (string.matches("^\\[.*]$")) {
             return false;
         }
-        // Thủ công: 万 -> vạn, 亿 -> tỷ
+        return true;
+    }
+    /** Dịch thủ công một số trường hợp đặc biệt */
+    private static String applyManualTranslation(String string) {
         if (string.matches("^[0-9.]+万$")) {
             return string.replaceAll("万$", " vạn");
         }
         if (string.matches("^[0-9.]+亿$")) {
             return string.replaceAll("亿$", " tỷ");
         }
-        return true;
+        return null;
     }
 }
