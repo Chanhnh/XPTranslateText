@@ -1,4 +1,4 @@
-package tianci.dev.xptranslatetext;
+package tianci.dev.xptranslatetext2;
 
 import java.util.ArrayList;
 import java.util.List;

@@ -23,5 +23,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "XPTranslateText"
+rootProject.name = "XPTranslateText2"
 include ':app'

@@ -1,4 +1,4 @@
-package tianci.dev.xptranslatetext;
+package tianci.dev.xptranslatetext2;
 
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
