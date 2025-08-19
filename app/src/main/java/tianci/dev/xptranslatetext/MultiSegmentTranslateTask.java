@@ -166,7 +166,7 @@ class MultiSegmentTranslateTask {
             }
 
         } catch (Exception e) {
-            XposedBridge.log("[" + cacheKey + "] translate exception => " + e.getMessage());
+            XposedBridge.log("Translation exception for " + from + "->" + to + ": " + e.getMessage());
         }
 
         // Nếu lỗi, clear token và thử lại
