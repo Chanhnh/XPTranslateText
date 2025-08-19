@@ -33,7 +33,7 @@ public class HookMain implements IXposedHookLoadPackage {
 
         XSharedPreferences prefs = new XSharedPreferences("tianci.dev.xptranslatetext", "xp_translate_text_configs");
 
-        String sourceLang = "auto";
+        String sourceLang = "";
         String targetLang = "vi";
 
         if (prefs.getFile().canRead()) {
