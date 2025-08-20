@@ -1,29 +1,28 @@
 package tianci.dev.xptranslatetext;
 
 import android.widget.TextView;
-
 import org.json.JSONArray;
 import org.json.JSONException;
-
 import java.io.BufferedReader;
+import java.io.InputStreamWriter;
 import java.io.InputStreamReader;
+import java.io.OutputStream
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLEncoder;
-
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 
 /**
- * 用來翻譯多個 Segment
+ * 用來翻譯多個 Segment (dùng translate-pa.googleapis.com API)
  */
 class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boolean> {
 
-    private static final String TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single";
+    private static final String TRANSLATE_URL = "https://translate-pa.googleapis.com/v1/translateHtml";
+    private static final String API_KEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
+
     // 簡易翻譯快取: (srcLang + tgtLang + text) -> translated
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
 
@@ -45,7 +44,6 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         String srcLang = params[0]; // e.g. "en"
         String tgtLang = params[1]; // e.g. "zh-TW"
 
-        // 逐段翻譯
         for (Segment seg : mSegments) {
             String txt = seg.text;
             if (txt.trim().isEmpty()) {
@@ -53,46 +51,47 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
                 continue;
             }
 
-            // 查快取
             String cacheKey = srcLang + ":" + tgtLang + ":" + txt;
             if (translationCache.containsKey(cacheKey)) {
                 seg.translatedText = translationCache.get(cacheKey);
                 continue;
             }
 
-            // 向 Google Translate API 發請求
             String result = translateOnline(txt, srcLang, tgtLang);
             if (result == null) {
-                seg.translatedText = txt; // 翻譯失敗 => 用原文
+                seg.translatedText = txt; // fallback
             } else {
                 seg.translatedText = result;
                 translationCache.put(cacheKey, result);
             }
         }
-
         return true;
     }
 
     private String translateOnline(String text, String src, String dst) {
         try {
-            String urlStr = TRANSLATE_URL
-                    + "?client=gtx"
-                    + "&sl=" + URLEncoder.encode(src, "UTF-8")
-                    + "&tl=" + URLEncoder.encode(dst, "UTF-8")
-                    + "&dt=t"
-                    + "&q=" + URLEncoder.encode(text, "UTF-8");
-
-            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-            conn.setRequestMethod("GET");
+            URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json+protobuf");
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            conn.setDoOutput(true);
 
-            BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = in.readLine()) != null) {
-                sb.append(line);
+            // JSON body giống format bạn đưa
+            // [["text"],"src","tgt"],"wt_lib"
+            String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"wt_lib\"]";
+
+            try (OutputStreamWriter writer = new OutputStreamWriter(conn.getOutputStream(), "UTF-8")) {
+                writer.write(payload);
             }
-            in.close();
+
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+            }
 
             return parseResult(sb.toString());
         } catch (Exception e) {
@@ -102,19 +101,19 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
     }
 
     private String parseResult(String json) {
-        try {
-            JSONArray jsonArray = new JSONArray(json);
-            JSONArray translations = jsonArray.getJSONArray(0);
-            StringBuilder translatedText = new StringBuilder();
-            for (int i = 0; i < translations.length(); i++) {
-                JSONArray arr = translations.getJSONArray(i);
-                translatedText.append(arr.getString(0));
-            }
-            return translatedText.toString();
-        } catch (JSONException e) {
-            XposedBridge.log("Error parsing translation result => " + e.getMessage());
-            return null;
-        }
+    try {
+        JSONArray root = new JSONArray(json);
+        JSONArray translatedArray = root.getJSONArray(0);
+        return translatedArray.getString(0); // "How are you doing?"
+    } catch (JSONException e) {
+        XposedBridge.log("Error parsing translation result => " + e.getMessage());
+        return null;
+    }
+}
+
+
+    private String escapeJson(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
     }
 
     @Override
@@ -123,7 +122,7 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
             XposedBridge.log("MultiSegmentTranslateTask => failed.");
             return;
         }
-        // 檢查 TextView 的 Tag, 確認尚未被新的翻譯取代
+
         TextView tv = (TextView) mParam.thisObject;
         Object tagObj = tv.getTag();
         if (!(tagObj instanceof Integer)) {
@@ -132,7 +131,6 @@ class MultiSegmentTranslateTask extends android.os.AsyncTask<String, Void, Boole
         }
         int currentTag = (Integer) tagObj;
         if (currentTag == mTranslationId) {
-            // 還是同一個 => 套用翻譯後結果
             HookMain.applyTranslatedSegments(mParam, mSegments);
         } else {
             XposedBridge.log("MultiSegmentTranslateTask => expired. currentTag=" + currentTag
