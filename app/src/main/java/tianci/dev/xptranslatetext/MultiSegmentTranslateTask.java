@@ -6,6 +6,7 @@ import android.widget.TextView;
 
 import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -21,16 +22,9 @@ import java.util.concurrent.Executors;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 
-/**
- * 用來翻譯多個 Segment
- */
+/** 用來翻譯多個 Segment */
 class MultiSegmentTranslateTask {
     private static final ExecutorService TRANSLATION_EXECUTOR = Executors.newFixedThreadPool(20);
-
-    // API duy nhất
-    private static final String TRANSLATE_URL = "https://translate-pa.googleapis.com/v1/translateHtml";
-    private static final String API_KEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
-
     // 簡易翻譯快取: (srcLang + tgtLang + text) -> translated
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
 
@@ -44,7 +38,6 @@ class MultiSegmentTranslateTask {
         TRANSLATION_EXECUTOR.submit(() -> {
             doTranslateSegments(segments, srcLang, tgtLang);
             new Handler(Looper.getMainLooper()).post(() -> {
-                // 確認 TextView 的 Tag 是否還是同一個 translationId
                 TextView tv = (TextView) param.thisObject;
                 Object tagObj = tv.getTag();
                 if (!(tagObj instanceof Integer)) {
@@ -53,7 +46,6 @@ class MultiSegmentTranslateTask {
                 }
                 int currentTag = (Integer) tagObj;
                 if (currentTag == translationId) {
-                    // 套用翻譯後結果
                     HookMain.applyTranslatedSegments(param, segments);
                 } else {
                     XposedBridge.log("MultiSegmentTranslateTask => expired. currentTag=" + currentTag
@@ -64,10 +56,8 @@ class MultiSegmentTranslateTask {
     }
 
     private static void doTranslateSegments(List<Segment> mSegments, String srcLang, String tgtLang) {
-        // 逐段翻譯
         for (Segment seg : mSegments) {
             String text = seg.text;
-
             if (text == null || text.trim().isEmpty()) {
                 seg.translatedText = text;
                 continue;
@@ -77,7 +67,7 @@ class MultiSegmentTranslateTask {
             if (text.startsWith("@")) {
                 String raw = text.substring(1);
                 String cacheKey = srcLang + ":" + tgtLang + ":" + raw;
-                String translated = translateByLines(raw, srcLang, tgtLang, cacheKey);
+                String translated = translateByLines(raw, cacheKey);
                 seg.translatedText = (translated == null) ? text : ("@" + translated);
                 if (translated != null) translationCache.put(cacheKey, translated);
                 continue;
@@ -96,10 +86,10 @@ class MultiSegmentTranslateTask {
                 continue;
             }
 
-            // 🌐 Dịch bình thường (giữ định dạng theo dòng)
-            String result = translateByLines(text, srcLang, tgtLang, cacheKey);
+            // 🌐 Dịch
+            String result = translateByLines(text, cacheKey);
             if (result == null) {
-                seg.translatedText = text; // fallback giữ nguyên
+                seg.translatedText = text;
             } else {
                 seg.translatedText = result;
                 translationCache.put(cacheKey, result);
@@ -108,12 +98,10 @@ class MultiSegmentTranslateTask {
     }
 
     /** Dịch từng dòng riêng biệt để bảo toàn format xuống dòng */
-    private static String translateByLines(String text, String src, String dst, String cacheKey) {
-        // Nếu không có xuống dòng → dịch một phát
+    private static String translateByLines(String text, String cacheKey) {
         if (!text.contains("\n") && !text.contains("\r")) {
-            return translateOnline(text, src, dst, cacheKey);
+            return translateOnline(text, cacheKey);
         }
-
         String[] lines;
         String lineBreakType = "\n";
         if (text.contains("\r\n")) {
@@ -122,20 +110,19 @@ class MultiSegmentTranslateTask {
         } else if (text.contains("\n")) {
             lines = text.split("\n", -1);
             lineBreakType = "\n";
-        } else { // chỉ \r
+        } else {
             lines = text.split("\r", -1);
             lineBreakType = "\r";
         }
-
         StringBuilder result = new StringBuilder();
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
             String translatedLine;
             if (line.trim().isEmpty()) {
-                translatedLine = line; // giữ nguyên dòng trống
+                translatedLine = line;
             } else {
-                translatedLine = translateOnline(line, src, dst, cacheKey);
-                if (translatedLine == null) translatedLine = line; // fallback
+                translatedLine = translateOnline(line, cacheKey);
+                if (translatedLine == null) translatedLine = line;
             }
             result.append(translatedLine);
             if (i < lines.length - 1) result.append(lineBreakType);
@@ -143,19 +130,17 @@ class MultiSegmentTranslateTask {
         return result.toString();
     }
 
-    /** Gọi API translate-pa (chỉ 1 API duy nhất) */
-    private static String translateOnline(String text, String src, String dst, String cacheKey) {
+    /** Gọi API localhost:3000/translate */
+    private static String translateOnline(String text, String cacheKey) {
         try {
-            URL url = new URL(TRANSLATE_URL + "?key=" + API_KEY);
+            URL url = new URL("http://localhost:3000/translate");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json+protobuf");
+            conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
             conn.setDoOutput(true);
 
-            // Payload kiểu: [[["text"],"src","dst"],"te"]
-            String payload = "[[[\"" + escapeJson(text) + "\"],\"" + src + "\",\"" + dst + "\"],\"te\"]";
-
+            String payload = "{\"text\":\"" + escapeJson(text) + "\"}";
             try (OutputStream os = conn.getOutputStream()) {
                 byte[] input = payload.getBytes("UTF-8");
                 os.write(input, 0, input.length);
@@ -168,36 +153,26 @@ class MultiSegmentTranslateTask {
                 while ((line = in.readLine()) != null) sb.append(line);
             }
 
-            return parseResult(sb.toString());
+            return parseLocalResult(sb.toString());
+
         } catch (Exception e) {
             XposedBridge.log("[" + cacheKey + "] translate exception => " + e.getMessage());
             return null;
         }
     }
 
-    /** Parse kết quả từ API mới */
-    private static String parseResult(String json) {
+    /** Parse kết quả từ API nội bộ */
+    private static String parseLocalResult(String json) {
         try {
-            JSONArray root = new JSONArray(json);
-            JSONArray translatedArray = root.getJSONArray(0);
-            String result = translatedArray.getString(0);
-            return decodeHtmlEntities(result);
+            JSONObject obj = new JSONObject(json);
+            if (obj.has("translation")) {
+                return obj.getString("translation");
+            }
+            return null;
         } catch (JSONException e) {
-            XposedBridge.log("parseResult error => " + e.getMessage());
+            XposedBridge.log("parseLocalResult error => " + e.getMessage());
             return null;
         }
-    }
-
-    /** Decode HTML entities trong kết quả dịch */
-    private static String decodeHtmlEntities(String text) {
-        if (text == null) return null;
-        return text.replace("&quot;", "\"")
-                .replace("&amp;", "&")
-                .replace("&lt;", "<")
-                .replace("&gt;", ">")
-                .replace("&apos;", "'")
-                .replace("&#39;", "'")
-                .replace("&nbsp;", " ");
     }
 
     /** Escape chuỗi cho JSON payload */
