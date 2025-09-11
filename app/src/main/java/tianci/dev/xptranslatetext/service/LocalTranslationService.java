@@ -45,8 +45,10 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.net.ssl.KeyManagerFactory;
@@ -79,8 +81,6 @@ public class LocalTranslationService extends Service {
     private ServerSocket serverSocket;
     private ExecutorService clientExecutor;
     private Thread serverThread;
-    private final Map<String, Translator> translatorPool = new ConcurrentHashMap<>();
-    private volatile LanguageIdentifier langIdClient;
 
     public static boolean isRunning() {
         return RUNNING.get();
@@ -89,8 +89,21 @@ public class LocalTranslationService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        int threads = Math.max(4, Runtime.getRuntime().availableProcessors() * 2);
-        clientExecutor = Executors.newFixedThreadPool(threads);
+        int cores = Runtime.getRuntime().availableProcessors();
+        int coreThreads = Math.max(4, cores);
+        int maxThreads = Math.min(64, Math.max(16, cores * 8));
+        clientExecutor = new ThreadPoolExecutor(
+                coreThreads,
+                maxThreads,
+                60L,
+                TimeUnit.SECONDS,
+                new SynchronousQueue<>(),
+                r -> {
+                    Thread t = new Thread(r, "LocalTrans-Worker");
+                    t.setDaemon(true);
+                    return t;
+                }
+        );
         createNotificationChannel();
     }
 
@@ -115,17 +128,6 @@ public class LocalTranslationService extends Service {
     public void onDestroy() {
         stopServer();
         if (clientExecutor != null) clientExecutor.shutdownNow();
-        try {
-            for (Translator t : translatorPool.values()) {
-                try { t.close(); } catch (Throwable ignored) {}
-            }
-        } finally {
-            translatorPool.clear();
-        }
-        if (langIdClient != null) {
-            try { langIdClient.close(); } catch (Throwable ignored) {}
-            langIdClient = null;
-        }
         super.onDestroy();
     }
 
@@ -185,7 +187,16 @@ public class LocalTranslationService extends Service {
                 }
                 while (RUNNING.get()) {
                     final Socket socket = serverSocket.accept();
-                    clientExecutor.execute(() -> handleClient(socket));
+                    try {
+                        clientExecutor.execute(() -> handleClient(socket));
+                    } catch (RejectedExecutionException rex) {
+                        try (OutputStream os = socket.getOutputStream()) {
+                            respond(os, 503, json("error", "server busy"));
+                        } catch (Throwable ignored) {
+                        } finally {
+                            try { socket.close(); } catch (Throwable ignored) {}
+                        }
+                    }
                 }
             } catch (IOException e) {
                 Log.e("LocalTranslation", "Server error: " + e.getMessage());
@@ -260,7 +271,9 @@ public class LocalTranslationService extends Service {
 
             // Auto language identification when src=auto.
             if ("auto".equalsIgnoreCase(src)) {
-                LanguageIdentifier idClient = getLanguageIdentifier();
+                LanguageIdentifier idClient = LanguageIdentification.getClient(
+                        new LanguageIdentificationOptions.Builder().setConfidenceThreshold(0.5f).build()
+                );
                 try {
                     String tag = Tasks.await(idClient.identifyLanguage(text));
                     if (tag == null || "und".equalsIgnoreCase(tag)) {
@@ -270,6 +283,8 @@ public class LocalTranslationService extends Service {
                     }
                 } catch (Exception e) {
                     src = "en";
+                } finally {
+                    try { idClient.close(); } catch (Throwable ignored) {}
                 }
             }
 
@@ -280,8 +295,9 @@ public class LocalTranslationService extends Service {
                 return;
             }
 
+            Translator translator = null;
             try {
-                Translator translator = getOrCreateTranslator(mlSrc, mlDst);
+                translator = createTranslator(mlSrc, mlDst);
                 // Download model if needed.
                 DownloadConditions cond = new DownloadConditions.Builder().build();
                 Tasks.await(translator.downloadModelIfNeeded(cond));
@@ -301,6 +317,10 @@ public class LocalTranslationService extends Service {
                 respond(os, 200, payload);
             } catch (Exception e) {
                 respond(os, 500, json("error", e.getMessage() == null ? "translate failed" : e.getMessage()));
+            } finally {
+                if (translator != null) {
+                    try { translator.close(); } catch (Throwable ignored) {}
+                }
             }
 
         } catch (IOException e) {
@@ -424,28 +444,12 @@ public class LocalTranslationService extends Service {
         }
     }
 
-    private Translator getOrCreateTranslator(String mlSrc, String mlDst) {
-        String key = mlSrc + "->" + mlDst;
-        return translatorPool.computeIfAbsent(key, k -> {
-            TranslatorOptions options = new TranslatorOptions.Builder()
-                    .setSourceLanguage(mlSrc)
-                    .setTargetLanguage(mlDst)
-                    .build();
-            return Translation.getClient(options);
-        });
-    }
-
-    private LanguageIdentifier getLanguageIdentifier() {
-        if (langIdClient == null) {
-            synchronized (this) {
-                if (langIdClient == null) {
-                    langIdClient = LanguageIdentification.getClient(
-                            new LanguageIdentificationOptions.Builder().setConfidenceThreshold(0.5f).build()
-                    );
-                }
-            }
-        }
-        return langIdClient;
+    private Translator createTranslator(String mlSrc, String mlDst) {
+        TranslatorOptions options = new TranslatorOptions.Builder()
+                .setSourceLanguage(mlSrc)
+                .setTargetLanguage(mlDst)
+                .build();
+        return Translation.getClient(options);
     }
 
     /**
@@ -501,6 +505,7 @@ public class LocalTranslationService extends Service {
             case 200 -> "OK";
             case 400 -> "Bad Request";
             case 404 -> "Not Found";
+            case 503 -> "Service Unavailable";
             default -> "Internal Server Error";
         };
         String headers = "HTTP/1.1 " + code + " " + status + "\r\n"
