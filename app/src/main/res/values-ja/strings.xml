@@ -2,7 +2,7 @@
     <string name="app_name">XPTranslateText</string>
     <string name="home_title">ローカル翻訳サービス</string>
     <string name="server_switch">ローカル翻訳サーバーを起動</string>
-    <string name="server_running">稼働中: http://127.0.0.1:%1$d</string>
+    <string name="server_running">稼働中: https://127.0.0.1:%1$d</string>
     <string name="server_stopped">停止中</string>
     <string name="lang_section_title">言語設定</string>
     <string name="source_lang">入力言語</string>
@@ -28,4 +28,3 @@
     <string name="label_lang_zh_tw">中国語（繁体字）</string>
     <string name="label_lang_zh_cn">中国語（簡体字）</string>
 </resources>
-

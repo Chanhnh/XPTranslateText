@@ -10,6 +10,7 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
+import android.util.Base64;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -34,6 +35,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
+import java.io.ByteArrayOutputStream;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URLDecoder;
@@ -46,8 +49,20 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLServerSocket;
+import javax.net.ssl.SSLServerSocketFactory;
+
+import java.security.KeyStore;
+import java.security.KeyFactory;
+import java.security.PrivateKey;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+
 /**
- * Foreground service that starts a minimal HTTP server on 127.0.0.1:18181.
+ * Foreground service that starts a minimal HTTPS server on 127.0.0.1:18181.
  * Route: /translate?src=xx&dst=yy&q=...
  * - When src=auto, use ML Kit Language ID for detection.
  */
@@ -147,7 +162,27 @@ public class LocalTranslationService extends Service {
         RUNNING.set(true);
         serverThread = new Thread(() -> {
             try {
-                serverSocket = new ServerSocket(PORT, 128);
+                SSLServerSocketFactory sslFactory = buildServerSslSocketFactory();
+                if (sslFactory != null) {
+                    try {
+                        serverSocket = sslFactory.createServerSocket(PORT, 128, InetAddress.getByName("127.0.0.1"));
+                        if (serverSocket instanceof SSLServerSocket) {
+                            SSLServerSocket sslServerSocket = (SSLServerSocket) serverSocket;
+                            try {
+                                sslServerSocket.setUseClientMode(false);
+                                sslServerSocket.setNeedClientAuth(false);
+                                sslServerSocket.setEnabledProtocols(new String[]{"TLSv1.3", "TLSv1.2"});                            } catch (Throwable ignored) {}
+                        }
+                        Log.i("LocalTranslation", "HTTPS server started on 127.0.0.1:" + PORT);
+                    } catch (Throwable t) {
+                        Log.e("LocalTranslation", "Failed to start HTTPS server: " + t);
+                        // If HTTPS fails, do NOT fallback to HTTP to avoid cleartext policy issues.
+                        throw t;
+                    }
+                } else {
+                    // No key material => do not start to avoid cleartext
+                    throw new IOException("No local HTTPS key material (PEM) available");
+                }
                 while (RUNNING.get()) {
                     final Socket socket = serverSocket.accept();
                     clientExecutor.execute(() -> handleClient(socket));
@@ -272,6 +307,105 @@ public class LocalTranslationService extends Service {
             // ignore per-connection errors
         } finally {
             try { socket.close(); } catch (IOException ignored) {}
+        }
+    }
+
+    /**
+     * Build SSLServerSocketFactory using only unencrypted PKCS#8 private key (PEM) + X.509 certificate (PEM).
+     *
+     * Expected locations (either pair):
+     * - assets/local_https_server.key + assets/local_https_server.crt
+     * - assets/local_https_server.key + assets/local_https_server.crt
+     *
+     * To avoid cleartext, this service does not fallback to HTTP; missing materials cause startup failure.
+     */
+    @Nullable
+    private SSLServerSocketFactory buildServerSslSocketFactory() {
+        // 僅走 PEM 流程
+        return buildServerSslSocketFactoryFromPem();
+    }
+
+    @Nullable
+    private SSLServerSocketFactory buildServerSslSocketFactoryFromPem() {
+        InputStream keyIs = null;
+        InputStream crtIs = null;
+        try {
+            // Private key (PKCS#8 unencrypted) and certificate (X.509)
+            try { keyIs = getAssets().open("local_https_server.key"); } catch (Throwable ignored) {}
+            try { crtIs = getAssets().open("local_https_server.crt"); } catch (Throwable ignored) {}
+
+            if (keyIs == null || crtIs == null) {
+                return null; // no PEM pair available
+            }
+
+            byte[] keyBytes = readAllBytes(keyIs);
+            byte[] derKey = parsePemSection(keyBytes, "PRIVATE KEY");
+            if (derKey == null) {
+                Log.e("LocalTranslation", "PEM parse error: no PRIVATE KEY section");
+                return null;
+            }
+
+            PrivateKey privateKey = null;
+            Exception last = null;
+            for (String alg : new String[]{"RSA", "EC", "DSA"}) {
+                try {
+                    KeyFactory kf = KeyFactory.getInstance(alg);
+                    privateKey = kf.generatePrivate(new PKCS8EncodedKeySpec(derKey));
+                    break;
+                } catch (Exception e) {
+                    last = e;
+                }
+            }
+            if (privateKey == null) {
+                Log.e("LocalTranslation", "Unable to construct PrivateKey: " + last);
+                return null;
+            }
+
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            Certificate cert = cf.generateCertificate(crtIs);
+
+            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+            ks.load(null);
+            char[] pass = "changeit".toCharArray();
+            ks.setKeyEntry("server", privateKey, pass, new Certificate[]{cert});
+
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            kmf.init(ks, pass);
+
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(kmf.getKeyManagers(), null, null);
+            Log.i("LocalTranslation", "HTTPS server configured from PEM assets.");
+            return sslContext.getServerSocketFactory();
+        } catch (Throwable t) {
+            Log.e("LocalTranslation", "buildServerSslSocketFactoryFromPem error: " + t);
+            return null;
+        } finally {
+            if (keyIs != null) try { keyIs.close(); } catch (Throwable ignored) {}
+            if (crtIs != null) try { crtIs.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    private static byte[] readAllBytes(InputStream is) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+        return bos.toByteArray();
+    }
+
+    @Nullable
+    private static byte[] parsePemSection(byte[] pemBytes, String type) {
+        String pem = new String(pemBytes, java.nio.charset.StandardCharsets.US_ASCII);
+        String begin = "-----BEGIN " + type + "-----";
+        String end = "-----END " + type + "-----";
+        int s = pem.indexOf(begin);
+        int e = pem.indexOf(end);
+        if (s < 0 || e < 0 || e <= s) return null;
+        String base64 = pem.substring(s + begin.length(), e).replaceAll("\\s", "");
+        try {
+            return Base64.decode(base64, Base64.DEFAULT);
+        } catch (Throwable t) {
+            return null;
         }
     }
 

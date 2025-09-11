@@ -2,7 +2,7 @@
     <string name="app_name">XPTranslateText</string>
     <string name="home_title">Служба локального перевода</string>
     <string name="server_switch">Запустить локальный сервер перевода</string>
-    <string name="server_running">Работает: http://127.0.0.1:%1$d</string>
+    <string name="server_running">Работает: https://127.0.0.1:%1$d</string>
     <string name="server_stopped">Не запущен</string>
     <string name="lang_section_title">Настройки языка</string>
     <string name="source_lang">Исходный язык</string>
@@ -28,4 +28,3 @@
     <string name="label_lang_zh_tw">Китайский (традиционный)</string>
     <string name="label_lang_zh_cn">Китайский (упрощённый)</string>
 </resources>
-

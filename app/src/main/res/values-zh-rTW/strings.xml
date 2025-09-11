@@ -2,7 +2,7 @@
     <string name="app_name">XPTranslateText</string>
     <string name="home_title">本地翻譯服務</string>
     <string name="server_switch">啟動本地翻譯服務器</string>
-    <string name="server_running">服務運行中： http://127.0.0.1:%1$d</string>
+    <string name="server_running">服務運行中： https://127.0.0.1:%1$d</string>
     <string name="server_stopped">服務未啟動</string>
     <string name="lang_section_title">翻譯語言設定</string>
     <string name="source_lang">來源語言</string>
@@ -28,4 +28,3 @@
     <string name="label_lang_zh_tw">中文（繁體）</string>
     <string name="label_lang_zh_cn">中文（簡體）</string>
 </resources>
-

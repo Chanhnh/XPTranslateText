@@ -11,10 +11,14 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.HostnameVerifier;
 import java.net.URL;
 import java.net.URLEncoder;
 
@@ -37,6 +41,14 @@ import tianci.dev.xptranslatetext.service.LocalTranslationService;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.SSLContext;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+
+import tianci.dev.xptranslatetext.util.LocalCerts;
 
 /**
  * Translate multiple segments with memory/DB caching and layered fallbacks.
@@ -47,6 +59,11 @@ public class MultiSegmentTranslateTask {
     private static final Map<String, String> translationCache = new ConcurrentHashMap<>();
     private static TranslationDatabaseHelper dbHelper;
 
+    // Cached SSL objects for local HTTPS pinning
+    private static volatile SSLSocketFactory LOCAL_PINNED_SSL_FACTORY;
+    private static final HostnameVerifier LOCAL_HOSTNAME_VERIFIER = (hostname, session) ->
+            "127.0.0.1".equals(hostname) || "localhost".equals(hostname) || "::1".equals(hostname);
+
     private static final String[] GEMINI_API_KEYS = KeyObfuscator.getApiKeys();
     private static final long[] geminiKeyBlockUntil = new long[GEMINI_API_KEYS.length];
     private static int geminiKeyIndex = 0;
@@ -56,7 +73,8 @@ public class MultiSegmentTranslateTask {
 
     public static void initDatabaseHelper(Context context) {
         if (dbHelper == null) {
-            dbHelper = new TranslationDatabaseHelper(context.getApplicationContext());
+            Context appCtx = context.getApplicationContext();
+            dbHelper = new TranslationDatabaseHelper(appCtx);
         }
     }
 
@@ -315,7 +333,7 @@ public class MultiSegmentTranslateTask {
     private static String translateByLocalServiceQuick(String text, String src, String dst, String cacheKey) {
         try {
             String urlStr = String.format(
-                    "http://127.0.0.1:%d/translate?src=%s&dst=%s&q=%s",
+                    "https://127.0.0.1:%d/translate?src=%s&dst=%s&q=%s",
                     LocalTranslationService.PORT,
                     URLEncoder.encode(src == null ? "auto" : src, "UTF-8"),
                     URLEncoder.encode(dst == null ? "zh-TW" : dst, "UTF-8"),
@@ -323,7 +341,9 @@ public class MultiSegmentTranslateTask {
             );
 
             URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
+            conn.setSSLSocketFactory(getOrCreateLocalPinnedFactory());
+            conn.setHostnameVerifier(LOCAL_HOSTNAME_VERIFIER);
             conn.setRequestMethod("GET");
             // Quick timeouts for synchronous path
             conn.setConnectTimeout(QUICK_LOCAL_CONNECT_TIMEOUT_MS);
@@ -354,7 +374,7 @@ public class MultiSegmentTranslateTask {
     private static String translateByLocalService(String text, String src, String dst, String cacheKey) {
         try {
             String urlStr = String.format(
-                    "http://127.0.0.1:%d/translate?src=%s&dst=%s&q=%s",
+                    "https://127.0.0.1:%d/translate?src=%s&dst=%s&q=%s",
                     LocalTranslationService.PORT,
                     URLEncoder.encode(src == null ? "auto" : src, "UTF-8"),
                     URLEncoder.encode(dst == null ? "zh-TW" : dst, "UTF-8"),
@@ -363,7 +383,9 @@ public class MultiSegmentTranslateTask {
 
             log(String.format("[%s] access local service => %s", cacheKey, urlStr));
             URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
+            conn.setSSLSocketFactory(getOrCreateLocalPinnedFactory());
+            conn.setHostnameVerifier(LOCAL_HOSTNAME_VERIFIER);
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(1000);
             conn.setReadTimeout(3000);
@@ -387,6 +409,31 @@ public class MultiSegmentTranslateTask {
         } catch (Exception e) {
             log(String.format("[%s] translate exception in local service => %s", cacheKey, e.getMessage()));
             return null;
+        }
+    }
+
+    private static SSLSocketFactory getOrCreateLocalPinnedFactory() throws Exception {
+        if (LOCAL_PINNED_SSL_FACTORY != null) return LOCAL_PINNED_SSL_FACTORY;
+        synchronized (MultiSegmentTranslateTask.class) {
+            if (LOCAL_PINNED_SSL_FACTORY != null) return LOCAL_PINNED_SSL_FACTORY;
+
+            // Always use built-in PEM to avoid package/asset lookup failures across users/profiles
+            try (InputStream certStream = LocalCerts.openLocalHttpsServerCrt()) {
+                CertificateFactory cf = CertificateFactory.getInstance("X.509");
+                X509Certificate cert = (X509Certificate) cf.generateCertificate(certStream);
+
+                KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+                ks.load(null);
+                ks.setCertificateEntry("local", cert);
+
+                TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+                tmf.init(ks);
+
+                SSLContext sc = SSLContext.getInstance("TLS");
+                sc.init(null, tmf.getTrustManagers(), new SecureRandom());
+                LOCAL_PINNED_SSL_FACTORY = sc.getSocketFactory();
+                return LOCAL_PINNED_SSL_FACTORY;
+            }
         }
     }
 
