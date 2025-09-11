@@ -42,8 +42,9 @@ After restart, the selected apps should display translated text automatically.
 
 ## ✅ **Compatibility**
 - Tested and confirmed working on:
-    - Android 13 with LSPosed
-    - Android 15 with LSPosed
+    - Android 13 with LSPosed (v1.9.2-it(7024))
+    - Android 15 with LSPosed (v1.9.2-it(7024))
+    - Android 16 with LSPosed (v1.9.2-it(7412))
 
 ## 🎬 Live Demo (Reddit Translation)
 
