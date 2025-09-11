@@ -93,38 +93,43 @@ public class MultiSegmentTranslateTask {
             doTranslateSegments(segments, srcLang, tgtLang);
 
             new Handler(Looper.getMainLooper()).post(() -> {
-                // Prefer AdditionalInstanceField to verify the same target
                 try {
-                    Object storedId = XposedHelpers.getAdditionalInstanceField(param.thisObject, HookMain.TRANSLATION_ID_KEY);
-                    if (storedId instanceof Integer) {
-                        int currentId = (Integer) storedId;
-                        if (currentId == translationId) {
-                            HookMain.applyTranslatedSegments(param, segments);
-                        } else {
-                            log("MultiSegmentTranslateTask => expired by additional field. currentId=" + currentId + ", myId=" + translationId);
+                    // Prefer AdditionalInstanceField to verify the same target
+                    try {
+                        Object storedId = XposedHelpers.getAdditionalInstanceField(param.thisObject, HookMain.TRANSLATION_ID_KEY);
+                        if (storedId instanceof Integer) {
+                            int currentId = (Integer) storedId;
+                            if (currentId == translationId) {
+                                HookMain.applyTranslatedSegments(param, segments);
+                            } else {
+                                log("MultiSegmentTranslateTask => expired by additional field. currentId=" + currentId + ", myId=" + translationId);
+                            }
+                            return; // handled verification path
                         }
-                        return;
+                    } catch (Throwable ignored) {
                     }
-                } catch (Throwable ignored) {
-                }
 
-                // fallback to getTag() (if View)
-                try {
-                    Method getTag = XposedHelpers.findMethodExactIfExists(param.thisObject.getClass(), "getTag");
-                    if (getTag != null) {
-                        Object tagObj = XposedHelpers.callMethod(param.thisObject, "getTag");
-                        if (tagObj instanceof Integer && ((Integer) tagObj) == translationId) {
-                            HookMain.applyTranslatedSegments(param, segments);
-                        } else {
-                            log("Tag mismatch => skip. tag=" + tagObj + ", myId=" + translationId);
+                    // fallback to getTag() (if View)
+                    try {
+                        Method getTag = XposedHelpers.findMethodExactIfExists(param.thisObject.getClass(), "getTag");
+                        if (getTag != null) {
+                            Object tagObj = XposedHelpers.callMethod(param.thisObject, "getTag");
+                            if (tagObj instanceof Integer && ((Integer) tagObj) == translationId) {
+                                HookMain.applyTranslatedSegments(param, segments);
+                            } else {
+                                log("Tag mismatch => skip. tag=" + tagObj + ", myId=" + translationId);
+                            }
+                            return; // handled tag path
                         }
-                        return;
+                    } catch (Throwable ignored) {
                     }
-                } catch (Throwable ignored) {
-                }
 
-                // If we cannot verify (non-View), conservatively apply
-                HookMain.applyTranslatedSegments(param, segments);
+                    // If we cannot verify (non-View), conservatively apply
+                    HookMain.applyTranslatedSegments(param, segments);
+                } finally {
+                    // Always clear in-progress marker regardless of apply outcome.
+                    HookMain.clearInProgress(param.thisObject);
+                }
             });
         });
     }

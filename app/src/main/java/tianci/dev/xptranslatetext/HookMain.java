@@ -42,10 +42,10 @@ import tianci.dev.xptranslatetext.translate.WebViewTranslationBridge;
  */
 public class HookMain implements IXposedHookLoadPackage {
 
-    private static boolean isTranslating = false;
-
     private static final AtomicInteger atomicIdGenerator = new AtomicInteger(1);
     public static final String TRANSLATION_ID_KEY = "xp_translate_text:translationId";
+    public static final String TRANSLATION_IN_PROGRESS_KEY = "xp_translate_text:in_progress";
+    public static final String TRANSLATION_IN_PROGRESS_TEXT_KEY = "xp_translate_text:in_progress_text";
 
     @Override
     public void handleLoadPackage(final XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
@@ -174,44 +174,55 @@ public class HookMain implements IXposedHookLoadPackage {
                                     segments.add(new Segment(0, piece.length(), piece.toString()));
                                 }
 
-                                // 1) memory/DB sync fast-path
-                                boolean allResolved = MultiSegmentTranslateTask.fillSegmentsFromCacheOrDbOrNoNeed(
-                                        segments, finalSourceLang, finalTargetLang);
-
-                                // 2) quick local-service sync (short wait) if not all resolved
-                                if (!allResolved) {
-                                    boolean nowResolved = MultiSegmentTranslateTask.quickTranslateUnresolvedSegmentsViaLocal(
-                                            segments, finalSourceLang, finalTargetLang, 1000 /*ms*/);
-                                    if (nowResolved) {
-                                        allResolved = true;
-                                    }
+                                // Deduplicate per-builder for the same piece while a translation is in-progress
+                                if (isDuplicateInProgress(builder, piece)) {
+                                    XposedBridge.log(String.format("[ duplicate ] %s translate", piece));
+                                    return XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
                                 }
+                                setInProgress(builder, piece);
 
-                                if (allResolved) {
-                                    // Replace builder text with translated spanned and build now
-                                    CharSequence newSpanned = buildSpannedFromSegments(segments);
+                                try {
+                                    // 1) memory/DB sync fast-path
+                                    boolean allResolved = MultiSegmentTranslateTask.fillSegmentsFromCacheOrDbOrNoNeed(
+                                            segments, finalSourceLang, finalTargetLang);
 
-                                    try {
-                                        XposedHelpers.setObjectField(builder, "mText", newSpanned);
-                                    } catch (Throwable ignore) {
-                                        try {
-                                            XposedHelpers.setObjectField(builder, "mSource", newSpanned);
-                                        } catch (Throwable ignore2) {
-                                            // Cannot write back; call through
-                                            return XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
+                                    // 2) quick local-service sync (short wait) if not all resolved
+                                    if (!allResolved) {
+                                        boolean nowResolved = MultiSegmentTranslateTask.quickTranslateUnresolvedSegmentsViaLocal(
+                                                segments, finalSourceLang, finalTargetLang, 1000 /*ms*/);
+                                        if (nowResolved) {
+                                            allResolved = true;
                                         }
                                     }
-                                    try {
-                                        XposedHelpers.setIntField(builder, "mStart", 0);
-                                        XposedHelpers.setIntField(builder, "mEnd", newSpanned.length());
-                                    } catch (Throwable ignore) {}
 
-                                    XposedBridge.log("[StaticLayout.Builder] applied translated text synchronously.");
-                                    return XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
-                                } else {
-                                    // 3) prefetch async for next time
-                                    MultiSegmentTranslateTask.prefetchSegmentsAsync(segments, finalSourceLang, finalTargetLang);
-                                    return XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
+                                    if (allResolved) {
+                                        // Replace builder text with translated spanned and build now
+                                        CharSequence newSpanned = buildSpannedFromSegments(segments);
+
+                                        try {
+                                            XposedHelpers.setObjectField(builder, "mText", newSpanned);
+                                        } catch (Throwable ignore) {
+                                            try {
+                                                XposedHelpers.setObjectField(builder, "mSource", newSpanned);
+                                            } catch (Throwable ignore2) {
+                                                // Cannot write back; call through
+                                                return XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
+                                            }
+                                        }
+                                        try {
+                                            XposedHelpers.setIntField(builder, "mStart", 0);
+                                            XposedHelpers.setIntField(builder, "mEnd", newSpanned.length());
+                                        } catch (Throwable ignore) {}
+
+                                        XposedBridge.log("[StaticLayout.Builder] applied translated text synchronously.");
+                                        return XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
+                                    } else {
+                                        // 3) prefetch async for next time
+                                        MultiSegmentTranslateTask.prefetchSegmentsAsync(segments, finalSourceLang, finalTargetLang);
+                                        return XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
+                                    }
+                                } finally {
+                                    clearInProgress(builder);
                                 }
                             } catch (Throwable t) {
                                 XposedBridge.log("[StaticLayout.Builder.build] replacement error => " + t.getMessage());
@@ -293,6 +304,12 @@ public class HookMain implements IXposedHookLoadPackage {
                             return;
                         }
 
+                        // Deduplicate in-progress requests for the same view + same text.
+                        if (isDuplicateInProgress(param.thisObject, originalText)) {
+                            XposedBridge.log(String.format("[ duplicate ] %s translate", originalText));
+                            return;
+                        }
+
                         // Skip translation for editable widgets to avoid altering user input.
                         try {
                             if (param.thisObject instanceof EditText) {
@@ -325,6 +342,9 @@ public class HookMain implements IXposedHookLoadPackage {
                             segments = new ArrayList<>();
                             segments.add(new Segment(0, originalText.length(), originalText.toString()));
                         }
+
+                        // Mark in-progress before dispatching async work
+                        setInProgress(param.thisObject, originalText);
 
                         // async translate + second call to original setText later
                         MultiSegmentTranslateTask.translateSegmentsAsync(
@@ -409,6 +429,12 @@ public class HookMain implements IXposedHookLoadPackage {
                                         } catch (Throwable ignored) {
                                         }
 
+                                        // Deduplicate in-progress requests for the same target + same text.
+                                        if (isDuplicateInProgress(param.thisObject, originalText)) {
+                                            XposedBridge.log(String.format("[ duplicate ] %s translate", originalText));
+                                            return;
+                                        }
+
                                         XposedBridge.log(String.format("[ translate ] %s string => %s", param.thisObject.getClass(), originalText));
 
                                         int translationId = atomicIdGenerator.getAndIncrement();
@@ -421,6 +447,9 @@ public class HookMain implements IXposedHookLoadPackage {
                                             segments = new ArrayList<>();
                                             segments.add(new Segment(0, originalText.length(), originalText.toString()));
                                         }
+
+                                        // Mark in-progress before dispatching async work
+                                        setInProgress(param.thisObject, originalText);
 
                                         MultiSegmentTranslateTask.translateSegmentsAsync(
                                                 param,
@@ -454,7 +483,6 @@ public class HookMain implements IXposedHookLoadPackage {
     public static void applyTranslatedSegments(XC_MethodHook.MethodHookParam param,
                                                List<Segment> segments) {
         try {
-            isTranslating = true;
 
             // Rebuild new spanned from segments
             CharSequence newSpanned = buildSpannedFromSegments(segments);
@@ -463,6 +491,8 @@ public class HookMain implements IXposedHookLoadPackage {
             // Only apply for setText-like methods that take arguments and update View state
             if (param.args != null && param.args.length >= 1) {
                 // e.g. TextView.setText(...) or custom setText(CharSequence)
+                // Mark in-progress using the translated text to prevent re-entrant scheduling
+                setInProgress(param.thisObject, newSpanned);
                 param.args[0] = newSpanned; // apply translated text
                 XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
             } else {
@@ -474,7 +504,8 @@ public class HookMain implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log("Error applying translated segments: " + t.getMessage());
         } finally {
-            isTranslating = false;
+            // Ensure in-progress marker is cleared after we apply (or even if apply failed)
+            clearInProgress(param.thisObject);
         }
     }
 
@@ -491,6 +522,49 @@ public class HookMain implements IXposedHookLoadPackage {
         } catch (Throwable ignored) {
         }
     }
+
+    /** Returns true if the same target already has an in-progress translation for the same text. */
+    public static boolean isDuplicateInProgress(Object target, CharSequence originalText) {
+        try {
+            Object inProgress = XposedHelpers.getAdditionalInstanceField(target, TRANSLATION_IN_PROGRESS_KEY);
+            if (!(inProgress instanceof Boolean) || !((Boolean) inProgress)) {
+                return false;
+            }
+            Object lastText = XposedHelpers.getAdditionalInstanceField(target, TRANSLATION_IN_PROGRESS_TEXT_KEY);
+            if (lastText instanceof String) {
+                return ((String) lastText).contentEquals(originalText);
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /** Marks this target as having an in-progress translation for the given text. */
+    public static void setInProgress(Object target, CharSequence originalText) {
+        try {
+            XposedHelpers.setAdditionalInstanceField(target, TRANSLATION_IN_PROGRESS_KEY, Boolean.TRUE);
+        } catch (Throwable ignored) {
+        }
+        try {
+            XposedHelpers.setAdditionalInstanceField(target, TRANSLATION_IN_PROGRESS_TEXT_KEY,
+                    originalText == null ? null : originalText.toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Clears the in-progress markers so future text can be processed. */
+    public static void clearInProgress(Object target) {
+        try {
+            XposedHelpers.setAdditionalInstanceField(target, TRANSLATION_IN_PROGRESS_KEY, Boolean.FALSE);
+        } catch (Throwable ignored) {
+        }
+        try {
+            XposedHelpers.setAdditionalInstanceField(target, TRANSLATION_IN_PROGRESS_TEXT_KEY, null);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    
 
     private static List<Segment> parseAllSegments(Spanned spanned) {
         List<Segment> segments = new ArrayList<>();
@@ -587,6 +661,9 @@ public class HookMain implements IXposedHookLoadPackage {
                 + "        if (node.nodeType === Node.TEXT_NODE) {\n"
                 + "            const text = node.textContent.trim();\n"
                 + "            if (text.length >= minLength) {\n"
+                + "                // Skip nodes already in-progress, or already translated to the same text.\n"
+                + "                if (node.__xpInProgress === true) return;\n"
+                + "                if (node.__xpTranslated === true && node.__xpTranslatedText === text) return;\n"
                 + "                textNodes.push(node);\n"
                 + "            }\n"
                 + "        } else {\n"
@@ -625,9 +702,13 @@ public class HookMain implements IXposedHookLoadPackage {
                 + "        const node = textNodes[currentIndex++];\n"
                 + "        const originalText = node.textContent.trim();\n"
                 + "        const requestId = 'req_' + Math.random().toString(36).substr(2);\n"
-                + "        pendingTranslations[requestId] = { node, timeoutId: null };\n"
-                + "        const TIMEOUT_MS = 500;\n"
+                + "        pendingTranslations[requestId] = { node: node, timeoutId: null, originalText: originalText };\n"
+                + "        node.__xpInProgress = true;\n"
+                + "        const TIMEOUT_MS = 800;\n"
                 + "        const timeoutId = setTimeout(() => {\n"
+                + "            const rec = pendingTranslations[requestId];\n"
+                + "            if (rec && rec.node) { rec.node.__xpInProgress = false; }\n"
+                + "            delete pendingTranslations[requestId];\n"
                 + "            processNextNode();\n"
                 + "        }, TIMEOUT_MS);\n"
                 + "        pendingTranslations[requestId].timeoutId = timeoutId;\n"
@@ -636,6 +717,7 @@ public class HookMain implements IXposedHookLoadPackage {
                 + "        } catch(err) {\n"
                 + "            console.error('[XPTranslate] translateFromJs error =>', err);\n"
                 + "            clearTimeout(timeoutId);\n"
+                + "            try { if (pendingTranslations[requestId]) pendingTranslations[requestId].node.__xpInProgress = false; } catch(e){}\n"
                 + "            delete pendingTranslations[requestId];\n"
                 + "            processNextNode();\n"
                 + "        }\n"
@@ -652,7 +734,14 @@ public class HookMain implements IXposedHookLoadPackage {
                 + "    if (record.timeoutId) {\n"
                 + "        clearTimeout(record.timeoutId);\n"
                 + "    }\n"
-                + "    record.node.textContent = translatedText;\n"
+                + "    try {\n"
+                + "        record.node.textContent = translatedText;\n"
+                + "        record.node.__xpTranslated = true;\n"
+                + "        record.node.__xpTranslatedText = translatedText;\n"
+                + "        record.node.__xpInProgress = false;\n"
+                + "    } catch(e) {\n"
+                + "        console.error('[XPTranslate] apply error =>', e);\n"
+                + "    }\n"
                 + "    delete pendingTranslations[requestId];\n"
                 + "    console.log(`[XPTranslate] replaced => ${requestId}`, translatedText);\n"
                 + "    if (typeof window.__xpTranslateProcessNextNode === 'function') {\n"
