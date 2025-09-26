@@ -39,6 +39,8 @@ public class HomeActivity extends AppCompatActivity {
     private MaterialAutoCompleteTextView sourceDropdown;
     private MaterialAutoCompleteTextView targetDropdown;
     private MaterialSwitch serverSwitch;
+    private MaterialSwitch fallbackGeminiSwitch;
+    private MaterialSwitch fallbackFreeGApiSwitch;
     private TextView statusText;
 
     private SharedPreferences prefs;
@@ -77,6 +79,8 @@ public class HomeActivity extends AppCompatActivity {
         sourceDropdown = findViewById(R.id.spinner_source_lang);
         targetDropdown = findViewById(R.id.spinner_target_lang);
         serverSwitch = findViewById(R.id.switch_server);
+        fallbackGeminiSwitch = findViewById(R.id.switch_gemini_fallback);
+        fallbackFreeGApiSwitch = findViewById(R.id.switch_free_gapi_fallback);
         statusText = findViewById(R.id.text_status);
         findViewById(R.id.btn_model_manager).setOnClickListener(v -> {
             startActivity(new Intent(this, ModelManagerActivity.class));
@@ -95,6 +99,15 @@ public class HomeActivity extends AppCompatActivity {
                 stopLocalServer();
             }
             updateStatusText(checked);
+        });
+
+        fallbackGeminiSwitch.setChecked(prefs.getBoolean("fallback_gemini", false));
+        fallbackGeminiSwitch.setOnCheckedChangeListener((btn, checked) -> {
+            prefs.edit().putBoolean("fallback_gemini", checked).apply();
+        });
+        fallbackFreeGApiSwitch.setChecked(prefs.getBoolean("fallback_free_gapi", false));
+        fallbackFreeGApiSwitch.setOnCheckedChangeListener((btn, checked) -> {
+            prefs.edit().putBoolean("fallback_free_gapi", checked).apply();
         });
     }
 

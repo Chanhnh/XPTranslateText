@@ -16,10 +16,10 @@ public class WebViewTranslationBridge {
     }
 
     @JavascriptInterface
-    public void translateFromJs(String requestId, String text, String srcLang, String tgtLang) {
+    public void translateFromJs(String requestId, String text, String srcLang, String tgtLang, boolean useFallbackGemini, boolean useFallbackGApi) {
         // Delegate to the shared translation task; result is posted via evaluateJavascript.
         Log.i("LSPosed-Bridge", String.format("[ translate ] WebViewTranslationBridge string => %s", text));
 
-        MultiSegmentTranslateTask.translateFromJs(webView, requestId, text, srcLang, tgtLang);
+        MultiSegmentTranslateTask.translateFromJs(webView, requestId, text, srcLang, tgtLang, useFallbackGemini, useFallbackGApi);
     }
 }

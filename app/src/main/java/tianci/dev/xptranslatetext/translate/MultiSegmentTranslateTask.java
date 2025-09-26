@@ -87,10 +87,12 @@ public class MultiSegmentTranslateTask {
             final int translationId,
             final List<Segment> segments,
             final String srcLang,
-            final String tgtLang
+            final String tgtLang,
+            final boolean useFallbackGemini,
+            final boolean useFallbackGApi
     ) {
         TRANSLATION_EXECUTOR.submit(() -> {
-            doTranslateSegments(segments, srcLang, tgtLang);
+            doTranslateSegments(segments, srcLang, tgtLang, useFallbackGemini, useFallbackGApi);
 
             new Handler(Looper.getMainLooper()).post(() -> {
                 try {
@@ -253,7 +255,7 @@ public class MultiSegmentTranslateTask {
      * Background prefetch: perform network translation and populate memory/DB cache.
      * This does NOT attempt to apply UI changes directly.
      */
-    public static void prefetchSegmentsAsync(List<Segment> segments, String srcLang, String tgtLang) {
+    public static void prefetchSegmentsAsync(List<Segment> segments, String srcLang, String tgtLang, boolean useFallbackGemini, boolean useFallbackGApi) {
         if (segments == null || segments.isEmpty()) return;
         // Copy texts to avoid mutating caller's segments
         List<Segment> copy = new ArrayList<>(segments.size());
@@ -261,12 +263,12 @@ public class MultiSegmentTranslateTask {
             Segment ns = new Segment(0, s.text == null ? 0 : s.text.length(), s.text == null ? "" : s.text);
             copy.add(ns);
         }
-        TRANSLATION_EXECUTOR.submit(() -> doTranslateSegments(copy, srcLang, tgtLang));
+        TRANSLATION_EXECUTOR.submit(() -> doTranslateSegments(copy, srcLang, tgtLang, useFallbackGemini, useFallbackGApi));
     }
 
     // -------------------------------------------------------------------------------
 
-    private static void doTranslateSegments(List<Segment> mSegments, String srcLang, String tgtLang) {
+    private static void doTranslateSegments(List<Segment> mSegments, String srcLang, String tgtLang, boolean useFallbackGemini, boolean useFallbackGApi) {
         // Translate segment by segment
         for (Segment seg : mSegments) {
             String text = seg.text;
@@ -306,7 +308,7 @@ public class MultiSegmentTranslateTask {
             if (result != null) {
                 putTranslationToDatabase(cacheKey, result);
             }
-            if (result == null && GEMINI_API_KEYS.length > 0) {
+            if (result == null && useFallbackGemini && GEMINI_API_KEYS.length > 0) {
                 log(String.format("[%s] translate start by gemini", cacheKey));
                 result = translateByGemini(text, tgtLang, cacheKey);
                 log(String.format("[%s] translate end by gemini => %s", cacheKey, result));
@@ -318,7 +320,7 @@ public class MultiSegmentTranslateTask {
             }
 
             // Fallback when Gemini returns 429 (rate limited) or failed.
-            if (result == null) {
+            if (result == null && useFallbackGApi) {
                 log(String.format("[%s] translate start by free google api", cacheKey));
                 result = translateByGoogleFreeApi(text, srcLang, tgtLang, cacheKey);
                 log(String.format("[%s] translate end by free google api => %s", cacheKey, result));
@@ -669,7 +671,7 @@ public class MultiSegmentTranslateTask {
         }
     }
 
-    public static void translateFromJs(WebView webView, String requestId, String text, String srcLang, String tgtLang) {
+    public static void translateFromJs(WebView webView, String requestId, String text, String srcLang, String tgtLang, boolean useFallbackGemini, boolean useFallbackGApi) {
         String cacheKey = srcLang + ":" + tgtLang + ":" + text;
         log(String.format("[%s] start translate", cacheKey));
 
@@ -678,12 +680,12 @@ public class MultiSegmentTranslateTask {
         String result = translateByLocalService(text, srcLang, tgtLang, cacheKey);
         log(String.format("[%s] translate end by local service => %s", cacheKey, result));
 
-        if (result == null && GEMINI_API_KEYS.length > 0) {
+        if (result == null && useFallbackGemini && GEMINI_API_KEYS.length > 0) {
             log(String.format("[%s] translate start by gemini", cacheKey));
             result = translateByGemini(text, tgtLang, cacheKey);
             log(String.format("[%s] translate end by gemini => %s", cacheKey, result));
         }
-        if (result == null) {
+        if (result == null && useFallbackGApi) {
             log(String.format("[%s] translate start by free google api", cacheKey));
             result = translateByGoogleFreeApi(text, srcLang, tgtLang, cacheKey);
             log(String.format("[%s] translate end by free google api => %s", cacheKey, result));

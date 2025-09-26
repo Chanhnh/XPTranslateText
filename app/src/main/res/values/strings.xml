@@ -27,4 +27,7 @@
     <string name="label_auto_detect">Auto Detect (auto)</string>
     <string name="label_lang_zh_tw">Chinese (Traditional)</string>
     <string name="label_lang_zh_cn">Chinese (Simplified)</string>
+    <string name="fallback_gemini_switch">Gemini API</string>
+    <string name="fallback_free_gapi_switch">Free Google Translate API</string>
+    <string name="fallback_section_title">Fallback Settings</string>
 </resources>

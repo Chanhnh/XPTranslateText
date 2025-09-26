@@ -72,10 +72,13 @@ public class HookMain implements IXposedHookLoadPackage {
         final String finalSourceLang = sourceLang;
         final String finalTargetLang = targetLang;
 
-        hookTextView(lpparam, finalSourceLang, finalTargetLang);
-        hookStaticLayout(lpparam, finalSourceLang, finalTargetLang);
-        hookAllCustomSetTextClasss(lpparam, finalSourceLang, finalTargetLang);
-        hookWebView(lpparam, finalSourceLang, finalTargetLang);
+        boolean useFallbackGemini = prefs.getBoolean("fallback_gemini", false);
+        boolean useFallbackGApi = prefs.getBoolean("fallback_free_gapi", false);
+
+        hookTextView(lpparam, finalSourceLang, finalTargetLang, useFallbackGemini, useFallbackGApi);
+        hookStaticLayout(lpparam, finalSourceLang, finalTargetLang, useFallbackGemini, useFallbackGApi);
+        hookAllCustomSetTextClasss(lpparam, finalSourceLang, finalTargetLang, useFallbackGemini, useFallbackGApi);
+        hookWebView(lpparam, finalSourceLang, finalTargetLang, useFallbackGemini, useFallbackGApi);
 
         XposedHelpers.findAndHookMethod(
                 "android.app.Activity",
@@ -101,7 +104,7 @@ public class HookMain implements IXposedHookLoadPackage {
      * - If unresolved, try quick local-service translation (background I/O + short await on UI)
      * - If still unresolved, prefetch async and return original layout
      */
-    private void hookStaticLayout(XC_LoadPackage.LoadPackageParam lpparam, String finalSourceLang, String finalTargetLang) {
+    private void hookStaticLayout(XC_LoadPackage.LoadPackageParam lpparam, String finalSourceLang, String finalTargetLang, boolean useFallbackGemini, boolean useFallbackGApi) {
         try {
             XposedHelpers.findAndHookMethod(
                     "android.text.StaticLayout$Builder",
@@ -218,7 +221,7 @@ public class HookMain implements IXposedHookLoadPackage {
                                         return XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
                                     } else {
                                         // 3) prefetch async for next time
-                                        MultiSegmentTranslateTask.prefetchSegmentsAsync(segments, finalSourceLang, finalTargetLang);
+                                        MultiSegmentTranslateTask.prefetchSegmentsAsync(segments, finalSourceLang, finalTargetLang, useFallbackGemini, useFallbackGApi);
                                         return XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
                                     }
                                 } finally {
@@ -236,7 +239,7 @@ public class HookMain implements IXposedHookLoadPackage {
         }
     }
 
-    private void hookWebView(XC_LoadPackage.LoadPackageParam lpparam, String finalSourceLang, String finalTargetLang) {
+    private void hookWebView(XC_LoadPackage.LoadPackageParam lpparam, String finalSourceLang, String finalTargetLang, boolean useFallbackGemini, boolean useFallbackGApi) {
         XposedHelpers.findAndHookConstructor(
                 "android.webkit.WebView",
                 lpparam.classLoader,
@@ -276,7 +279,7 @@ public class HookMain implements IXposedHookLoadPackage {
 
                         XposedBridge.log("onPageFinished => " + url);
 
-                        String jsCode = buildExtractTextJS(finalSourceLang, finalTargetLang);
+                        String jsCode = buildExtractTextJS(finalSourceLang, finalTargetLang, useFallbackGemini, useFallbackGApi);
 
                         webView.post(() -> {
                             webView.evaluateJavascript(jsCode, null);
@@ -286,7 +289,7 @@ public class HookMain implements IXposedHookLoadPackage {
         );
     }
 
-    private void hookTextView(XC_LoadPackage.LoadPackageParam lpparam, String finalSourceLang, String finalTargetLang) {
+    private void hookTextView(XC_LoadPackage.LoadPackageParam lpparam, String finalSourceLang, String finalTargetLang, boolean useFallbackGemini, boolean useFallbackGApi) {
         XposedHelpers.findAndHookMethod(
                 "android.widget.TextView",
                 lpparam.classLoader,
@@ -352,14 +355,16 @@ public class HookMain implements IXposedHookLoadPackage {
                                 translationId,
                                 segments,
                                 finalSourceLang,
-                                finalTargetLang
+                                finalTargetLang,
+                                useFallbackGemini,
+                                useFallbackGApi
                         );
                     }
                 }
         );
     }
 
-    private void hookAllCustomSetTextClasss(XC_LoadPackage.LoadPackageParam lpparam, String finalSourceLang, String finalTargetLang) {
+    private void hookAllCustomSetTextClasss(XC_LoadPackage.LoadPackageParam lpparam, String finalSourceLang, String finalTargetLang, boolean useFallbackGemini, boolean useFallbackGApi) {
         try {
             Field pathListField = XposedHelpers.findField(lpparam.classLoader.getClass(), "pathList");
             Object pathList = pathListField.get(lpparam.classLoader);
@@ -456,7 +461,9 @@ public class HookMain implements IXposedHookLoadPackage {
                                                 translationId,
                                                 segments,
                                                 finalSourceLang,
-                                                finalTargetLang
+                                                finalTargetLang,
+                                                useFallbackGemini,
+                                                useFallbackGApi
                                         );
                                     }
                                 });
@@ -651,7 +658,7 @@ public class HookMain implements IXposedHookLoadPackage {
         return ssb;
     }
 
-    private String buildExtractTextJS(String finalSourceLang, String finalTargetLang) {
+    private String buildExtractTextJS(String finalSourceLang, String finalTargetLang, boolean useFallbackGemini, boolean useFallbackGApi) {
         return ""
                 + "const EXCLUDE_TAGS = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME', 'SVG', 'CANVAS', 'HEAD', 'META', 'LINK'];\n"
                 + "function extractAllTextNodes(rootElement, minLength = 20) {\n"
@@ -713,7 +720,7 @@ public class HookMain implements IXposedHookLoadPackage {
                 + "        }, TIMEOUT_MS);\n"
                 + "        pendingTranslations[requestId].timeoutId = timeoutId;\n"
                 + "        try {\n"
-                + "            window.XPTranslateTextBridge.translateFromJs(requestId, originalText, '" + finalSourceLang + "', '" + finalTargetLang + "');\n"
+                + "            window.XPTranslateTextBridge.translateFromJs(requestId, originalText, '" + finalSourceLang + "', '" + finalTargetLang + "', " + useFallbackGemini + ", " + useFallbackGApi + ");\n"
                 + "        } catch(err) {\n"
                 + "            console.error('[XPTranslate] translateFromJs error =>', err);\n"
                 + "            clearTimeout(timeoutId);\n"
